@@ -39,12 +39,13 @@ if "timer_start" not in st.session_state:   # 타이머를 시작한 시각 (없
 
 # 6) '현재 작업 초기화' 실제 처리 --------------------------
 # 아래 초기화 버튼을 누르면 이 부분이 먼저 실행되어
-# 학생 정보 / 아이디어 입력칸 / AI 대화가 지워집니다. (저장된 기록은 그대로 유지)
+# 이름칸 / 아이디어 입력칸 / AI 대화 / 시계(타이머)가 모두 비워집니다.
+# (저장된 기록은 그대로 유지됩니다.)
 if st.session_state.get("_현재작업초기화"):
     st.session_state["_현재작업초기화"] = False
     st.session_state.messages = []               # AI 대화 내용 지우기
-    st.session_state.timer_start = None          # 타이머도 초기화
-    for 키 in ("이름", "학년선택", "아이디어입력"):  # 입력칸 값들 지우기
+    st.session_state.timer_start = None          # 시계(타이머) 초기화 -> 다시 10:00
+    for 키 in ("이름", "학년선택", "아이디어입력"):  # 이름칸 / 학년 / 아이디어칸 비우기
         st.session_state.pop(키, None)
 
 
@@ -65,40 +66,15 @@ with st.sidebar:
         st.rerun()  # 화면을 새로 그려서 깨끗하게 비웁니다.
 
     st.divider()
-    # 기록 확인 암호: '4087'을 맞게 입력한 사람만 저장된 기록을 볼 수 있어요.
+    # 기록 확인 암호: '0000'을 맞게 입력한 사람만 저장된 기록을 볼 수 있어요.
     암호 = st.text_input("기록 확인 암호", type="password", placeholder="연구자만 입력")
-    암호맞음 = (암호 == "4087")
+    암호맞음 = (암호 == "0000")
 
 
-# 8) 화면 맨 위 제목 - 시험지(활동지)처럼, 제목은 정중앙 두 줄
+# 8) 화면 맨 위 - 오늘 날짜(자동) + 제목 -----------------
 오늘 = datetime.date.today().strftime("%Y년 %m월 %d일")
-이름_표시 = name if name else "&nbsp;" * 10  # 이름이 없으면 빈 칸처럼 보이게
-
-st.markdown(
-    f"""
-    <div style="border:2px solid #2b2b2b; border-radius:10px; padding:18px 22px;
-                background:#fafafa; margin-bottom:14px;">
-      <div style="display:flex; justify-content:space-between; align-items:center;
-                  font-size:13px; color:#555; letter-spacing:1px;">
-        <span>🌱 환경 · 데이터 수업 활동지</span>
-        <span>{오늘}</span>
-      </div>
-      <div style="border-top:1px dashed #bbb; margin:10px 0;"></div>
-      <!-- 제목: 정중앙 정렬 + 매끄럽게 두 줄 (word-break:keep-all 로 단어가 잘리지 않게) -->
-      <div style="text-align:center; font-size:27px; font-weight:800; color:#1a1a1a;
-                  line-height:1.55; word-break:keep-all;">
-        환경오염을 해결하기 위한<br>아이디어를 작성해 주세요
-      </div>
-      <div style="border-top:1px dashed #bbb; margin:12px 0 10px 0;"></div>
-      <div style="display:flex; gap:26px; font-size:15px; color:#333;">
-        <span>이름 : <b>{이름_표시}</b></span>
-        <span>학년 : <b>{grade}</b></span>
-        <span>점수 : ______</span>
-      </div>
-    </div>
-    """,
-    unsafe_allow_html=True,
-)
+st.caption(f"📅 {오늘}")  # 제목 위에 오늘 날짜를 자동으로 표시
+st.title("환경오염을 해결하기 위한 아이디어를 작성해주세요.")
 
 
 # 9) 상단 타이머 (10분 카운트다운) -------------------------
