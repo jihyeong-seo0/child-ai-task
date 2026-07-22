@@ -5,12 +5,12 @@
 # =========================================================
 
 # 1) 필요한 라이브러리 불러오기 ----------------------------
-import io                                  # 엑셀 파일을 메모리에서 만들 때 사용
-import time                                # 타이머(경과 시간 계산)에 사용
-import datetime                            # 활동지에 오늘 날짜를 넣을 때 사용
-import streamlit as st                     # 화면(웹앱)을 만들어 주는 라이브러리
+import io                                     # 엑셀 파일을 메모리에서 만들 때 사용
+import time                                   # 타이머(경과 시간 계산)에 사용
+import datetime                               # 활동지에 오늘 날짜를 넣을 때 사용
+import streamlit as st                        # 화면(웹앱)을 만들어 주는 라이브러리
 import streamlit.components.v1 as components  # 실시간 타이머(HTML/JS) 넣을 때 사용
-from openai import OpenAI                  # Solar API를 호출할 때 쓰는 라이브러리
+from openai import OpenAI                     # Solar API를 호출할 때 쓰는 라이브러리
 
 
 # 2) 페이지 기본 설정 --------------------------------------
@@ -28,24 +28,49 @@ client = OpenAI(
 )
 
 
-# 5) 사이드바(왼쪽 메뉴) - 이름 / 학년 / 기록 확인 암호 ----
+# 5) 세션 상태(기억 장치) 준비하기 -------------------------
+if "messages" not in st.session_state:      # 진행 중인 대화 (AI가 이전 대화를 기억)
+    st.session_state.messages = []
+if "records" not in st.session_state:       # 이름별 저장 기록 (이름이 '코드' 역할)
+    st.session_state.records = {}
+if "timer_start" not in st.session_state:   # 타이머를 시작한 시각 (없으면 None)
+    st.session_state.timer_start = None
+
+
+# 6) '현재 작업 초기화' 실제 처리 --------------------------
+# 아래 초기화 버튼을 누르면 이 부분이 먼저 실행되어
+# 학생 정보 / 아이디어 입력칸 / AI 대화가 지워집니다. (저장된 기록은 그대로 유지)
+if st.session_state.get("_현재작업초기화"):
+    st.session_state["_현재작업초기화"] = False
+    st.session_state.messages = []               # AI 대화 내용 지우기
+    st.session_state.timer_start = None          # 타이머도 초기화
+    for 키 in ("이름", "학년선택", "아이디어입력"):  # 입력칸 값들 지우기
+        st.session_state.pop(키, None)
+
+
+# 7) 사이드바(왼쪽 메뉴) - 이름 / 학년 / 초기화 / 암호 -----
 with st.sidebar:
     st.header("학생 정보")
 
     # 이름: 이 이름이 '하나의 코드(구분자)'가 되어
     #      아이디어/프롬프트/결과물을 이 이름에 묶어 저장합니다.
-    name = st.text_input("이름을 입력하세요")
+    name = st.text_input("이름을 입력하세요", key="이름")
 
     # 나이(학년): 초등학교 5학년 / 6학년 중에서 선택
-    grade = st.radio("나이(학년)를 선택하세요", ["초등학교 5학년", "초등학교 6학년"])
+    grade = st.radio("나이(학년)를 선택하세요", ["초등학교 5학년", "초등학교 6학년"], key="학년선택")
+
+    # 현재 작업 초기화 버튼 (저장된 기록은 남고, 지금 쓰던 것만 지움)
+    if st.button("🧹 현재 작업 초기화 (기록은 유지)"):
+        st.session_state["_현재작업초기화"] = True
+        st.rerun()  # 화면을 새로 그려서 깨끗하게 비웁니다.
 
     st.divider()
     # 기록 확인 암호: '4087'을 맞게 입력한 사람만 저장된 기록을 볼 수 있어요.
-    암호 = st.text_input("기록 확인 암호", type="password", placeholder="선생님만 입력")
+    암호 = st.text_input("기록 확인 암호", type="password", placeholder="연구자만 입력")
     암호맞음 = (암호 == "4087")
 
 
-# 6) 화면 맨 위 제목 - 시험지(활동지)처럼, 제목은 정중앙 두 줄
+# 8) 화면 맨 위 제목 - 시험지(활동지)처럼, 제목은 정중앙 두 줄
 오늘 = datetime.date.today().strftime("%Y년 %m월 %d일")
 이름_표시 = name if name else "&nbsp;" * 10  # 이름이 없으면 빈 칸처럼 보이게
 
@@ -76,29 +101,17 @@ st.markdown(
 )
 
 
-# 7) 세션 상태 준비하기 ------------------------------------
-# 세션 상태(session_state)는 새로고침해도 값이 유지되는 '기억 장치'예요.
-if "messages" not in st.session_state:      # 진행 중인 대화 (AI가 이전 대화를 기억)
-    st.session_state.messages = []
-if "records" not in st.session_state:       # 이름별 저장 기록 (이름이 '코드' 역할)
-    st.session_state.records = {}
-if "timer_start" not in st.session_state:   # 타이머를 시작한 시각 (없으면 None)
-    st.session_state.timer_start = None
-
-
-# 8) 상단 타이머 (10분 카운트다운) -------------------------
+# 9) 상단 타이머 (10분 카운트다운) -------------------------
 TIMER_초 = 600  # 10분 = 600초
 
-# 시작 / 리셋 버튼
 버튼1, 버튼2, _ = st.columns([1, 1, 3])
 with 버튼1:
     if st.button("⏱ 시작"):
-        st.session_state.timer_start = time.time()  # 지금 시각을 기록 -> 카운트다운 시작
+        st.session_state.timer_start = time.time()  # 지금 시각 기록 -> 카운트다운 시작
 with 버튼2:
     if st.button("리셋"):
         st.session_state.timer_start = None          # 다시 10:00 으로
 
-# 남은 시간 계산: 시작했으면 (600 - 흐른 시간), 아니면 그대로 600초
 if st.session_state.timer_start is not None:
     흐른시간 = time.time() - st.session_state.timer_start
     남은초 = max(0, int(round(TIMER_초 - 흐른시간)))
@@ -107,8 +120,8 @@ else:
     남은초 = TIMER_초
     실행중 = False
 
-# 실제 화면에 보이는 시계는 브라우저(JS)가 1초마다 스스로 줄여서 보여 줍니다.
-# -> 채팅을 하는 동안에도 앱이 멈추지 않고 시계가 계속 흐릅니다.
+# 실제 화면 시계는 브라우저(JS)가 1초마다 스스로 줄여 보여 줍니다.
+# -> 채팅하는 동안에도 앱이 멈추지 않고 시계가 계속 흐릅니다.
 타이머_HTML = f"""
 <div style="font-family:-apple-system,'Segoe UI',sans-serif; text-align:center;">
   <div id="disp" style="font-size:46px; font-weight:800; letter-spacing:2px; color:#1a1a1a;">10:00</div>
@@ -140,7 +153,7 @@ else:
 components.html(타이머_HTML, height=110)
 
 
-# 9) 이름별 저장 공간을 만들어 주는 도우미 함수 ------------
+# 10) 이름별 저장 공간을 만들어 주는 도우미 함수 -----------
 def 이름_저장공간_준비(학생이름):
     """해당 이름의 저장 공간이 없으면 새로 만들어 줍니다."""
     if 학생이름 not in st.session_state.records:
@@ -153,16 +166,16 @@ def 이름_저장공간_준비(학생이름):
 
 
 # =========================================================
-# 10) [첫 번째 칸] 아이디어 작성 칸
+# 11) [첫 번째 칸] 아이디어 작성 칸
 # =========================================================
 st.header("✏️ 아이디어 작성 칸")
 st.caption("환경오염을 해결할 나만의 아이디어를 자유롭게 적어 보세요.")
 
 아이디어_내용 = st.text_area(
-    "나의 아이디어", height=140, placeholder="예) 학교에서 분리수거 게임을 만들어요!"
+    "나의 아이디어", height=140,
+    placeholder="예) 학교에서 분리수거 게임을 만들어요!", key="아이디어입력",
 )
 
-# '아이디어 제출하기' 버튼
 if st.button("아이디어 제출하기"):
     if not name:
         st.warning("먼저 사이드바에서 이름을 입력해 주세요.")
@@ -188,7 +201,7 @@ st.divider()  # 두 칸을 구분하는 선
 
 
 # =========================================================
-# 11) [두 번째 칸] 생성형 AI 대화 칸
+# 12) [두 번째 칸] 생성형 AI 대화 칸
 # =========================================================
 st.header("🤖 생성형 AI 대화 칸")
 st.caption("아이디어에 대해 AI 선생님과 이야기해 보세요.")
@@ -219,12 +232,10 @@ if 질문:
         st.stop()
 
     with 대화상자:
-        # 학생 메시지 표시 및 기억
         st.session_state.messages.append({"role": "user", "content": 질문})
         with st.chat_message("user"):
             st.markdown(질문)
 
-        # AI 답변 (말풍선으로 이어서)
         with st.chat_message("assistant"):
             try:
                 스트림 = client.chat.completions.create(
@@ -254,69 +265,118 @@ if 질문:
 
 
 # =========================================================
-# 12) 기록을 txt / excel 로 만들어 주는 도우미 함수들
+# 13) 기록을 보기 좋은 Excel(xlsx)로 만들어 주는 함수
+#     - 학생별로 시트를 나누고, [제출한 아이디어] -> [AI 대화] 순서로 정리
 # =========================================================
-def 기록_txt만들기(대상기록):
-    """이름별로 [제출한 아이디어]와 [Solar와의 대화]를 함께 담은 글자를 만듭니다."""
-    줄 = []
-    for 이름, 정보 in 대상기록.items():
-        줄.append(f"이름 : {이름}")
-        줄.append(f"학년 : {정보['학년']}")
-        줄.append("")
-        줄.append("[제출한 아이디어]")
-        if 정보["아이디어"]:
-            for i, 글 in enumerate(정보["아이디어"], start=1):
-                줄.append(f"  {i}. {글}")
-        else:
-            줄.append("  (없음)")
-        줄.append("")
-        줄.append("[Solar와의 대화]")
-        if 정보["대화"]:
-            for i, 쌍 in enumerate(정보["대화"], start=1):
-                줄.append(f"  {i}) 학생: {쌍['프롬프트']}")
-                줄.append(f"     AI  : {쌍['결과물']}")
-        else:
-            줄.append("  (없음)")
-        줄.append("")
-        줄.append("=" * 45)
-        줄.append("")
-    return "\n".join(줄)
+def _시트이름(원본, 사용중):
+    """엑셀 시트 이름에 쓸 수 없는 글자를 지우고, 31자 제한/중복을 처리합니다."""
+    금지 = '[]:*?/\\'
+    이름 = "".join(c for c in 원본 if c not in 금지).strip() or "학생"
+    이름 = 이름[:28]
+    후보, n = 이름, 1
+    while 후보 in 사용중:
+        n += 1
+        후보 = f"{이름}_{n}"[:31]
+    사용중.add(후보)
+    return 후보
 
 
 def 기록_excel만들기(대상기록):
-    """이름별 아이디어와 대화를 한 표(엑셀 시트)로 정리해서 파일 데이터를 만듭니다."""
-    import pandas as pd  # 판다스는 스트림릿 클라우드에 기본 설치되어 있어요.
+    from openpyxl import Workbook
+    from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 
-    행목록 = []
+    wb = Workbook()
+    wb.remove(wb.active)  # 기본 시트 제거
+
+    선 = Side(style="thin", color="D9D9D9")
+    테두리 = Border(left=선, right=선, top=선, bottom=선)
+    가운데 = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    왼쪽 = Alignment(horizontal="left", vertical="top", wrap_text=True)
+    제목폰트 = Font(bold=True, size=14, color="FFFFFF")
+    제목채움 = PatternFill("solid", fgColor="2E7D32")
+    구획폰트 = Font(bold=True, size=12, color="1B5E20")
+    구획채움 = PatternFill("solid", fgColor="E8F5E9")
+    헤더폰트 = Font(bold=True, color="FFFFFF")
+    헤더채움 = PatternFill("solid", fgColor="66BB6A")
+    라벨폰트 = Font(bold=True)
+
+    사용중 = set()
     for 이름, 정보 in 대상기록.items():
-        # 아이디어 행
-        for i, 글 in enumerate(정보["아이디어"], start=1):
-            행목록.append({
-                "이름": 이름, "학년": 정보["학년"], "유형": "아이디어",
-                "번호": i, "학생 입력(프롬프트)": 글, "AI 답변(결과물)": "",
-            })
-        # 대화 행
-        for i, 쌍 in enumerate(정보["대화"], start=1):
-            행목록.append({
-                "이름": 이름, "학년": 정보["학년"], "유형": "대화",
-                "번호": i, "학생 입력(프롬프트)": 쌍["프롬프트"], "AI 답변(결과물)": 쌍["결과물"],
-            })
+        ws = wb.create_sheet(title=_시트이름(이름, 사용중))
+        ws.column_dimensions["A"].width = 8    # 번호
+        ws.column_dimensions["B"].width = 50   # 아이디어 / 학생 프롬프트
+        ws.column_dimensions["C"].width = 55   # AI 답변
 
-    표 = pd.DataFrame(
-        행목록,
-        columns=["이름", "학년", "유형", "번호", "학생 입력(프롬프트)", "AI 답변(결과물)"],
-    )
-    저장통 = io.BytesIO()                       # 파일을 메모리에 만들기
-    표.to_excel(저장통, index=False, engine="openpyxl")
+        r = 1
+        # 큰 제목
+        ws.merge_cells(start_row=r, start_column=1, end_row=r, end_column=3)
+        c = ws.cell(r, 1, "환경 수업 활동 기록")
+        c.font, c.fill, c.alignment = 제목폰트, 제목채움, 가운데
+        ws.row_dimensions[r].height = 26
+        r += 1
+
+        # 이름 / 학년
+        for 라벨, 값 in [("이름", 이름), ("학년", 정보["학년"])]:
+            c = ws.cell(r, 1, 라벨); c.font, c.alignment, c.border = 라벨폰트, 가운데, 테두리
+            ws.merge_cells(start_row=r, start_column=2, end_row=r, end_column=3)
+            ws.cell(r, 2, 값).alignment = 왼쪽
+            ws.cell(r, 2).border = 테두리
+            ws.cell(r, 3).border = 테두리
+            r += 1
+        r += 1
+
+        # ── 구획 1: 제출한 아이디어 ──
+        ws.merge_cells(start_row=r, start_column=1, end_row=r, end_column=3)
+        c = ws.cell(r, 1, "■ 제출한 아이디어"); c.font, c.fill, c.alignment = 구획폰트, 구획채움, 왼쪽
+        r += 1
+        ws.cell(r, 1, "번호")
+        ws.merge_cells(start_row=r, start_column=2, end_row=r, end_column=3)
+        ws.cell(r, 2, "아이디어 내용")
+        for col in (1, 2, 3):
+            cc = ws.cell(r, col); cc.font, cc.fill, cc.alignment, cc.border = 헤더폰트, 헤더채움, 가운데, 테두리
+        r += 1
+        if 정보["아이디어"]:
+            for i, 글 in enumerate(정보["아이디어"], start=1):
+                ws.cell(r, 1, i).alignment = 가운데; ws.cell(r, 1).border = 테두리
+                ws.merge_cells(start_row=r, start_column=2, end_row=r, end_column=3)
+                ws.cell(r, 2, 글).alignment = 왼쪽
+                ws.cell(r, 2).border = 테두리; ws.cell(r, 3).border = 테두리
+                r += 1
+        else:
+            ws.merge_cells(start_row=r, start_column=1, end_row=r, end_column=3)
+            ws.cell(r, 1, "(제출한 아이디어가 없습니다)").alignment = 왼쪽
+            r += 1
+        r += 1
+
+        # ── 구획 2: 생성형 AI 대화 기록 ──
+        ws.merge_cells(start_row=r, start_column=1, end_row=r, end_column=3)
+        c = ws.cell(r, 1, "■ 생성형 AI 대화 기록"); c.font, c.fill, c.alignment = 구획폰트, 구획채움, 왼쪽
+        r += 1
+        for col, txt in [(1, "번호"), (2, "학생 프롬프트"), (3, "AI 답변")]:
+            cc = ws.cell(r, col, txt); cc.font, cc.fill, cc.alignment, cc.border = 헤더폰트, 헤더채움, 가운데, 테두리
+        r += 1
+        if 정보["대화"]:
+            for i, 쌍 in enumerate(정보["대화"], start=1):
+                ws.cell(r, 1, i).alignment = 가운데; ws.cell(r, 1).border = 테두리
+                ws.cell(r, 2, 쌍["프롬프트"]).alignment = 왼쪽; ws.cell(r, 2).border = 테두리
+                ws.cell(r, 3, 쌍["결과물"]).alignment = 왼쪽; ws.cell(r, 3).border = 테두리
+                r += 1
+        else:
+            ws.merge_cells(start_row=r, start_column=1, end_row=r, end_column=3)
+            ws.cell(r, 1, "(대화 기록이 없습니다)").alignment = 왼쪽
+            r += 1
+
+    저장통 = io.BytesIO()
+    wb.save(저장통)
     return 저장통.getvalue()
 
 
 # =========================================================
-# 13) 사이드바 아래쪽 - 암호를 맞힌 사람만 기록 내려받기
+# 14) 사이드바 아래쪽 - 암호를 맞힌 연구자만 기록 관리
 # =========================================================
 with st.sidebar:
     st.divider()
-    st.subheader("저장된 기록 (선생님용)")
+    st.subheader("저장된 기록 (연구자용)")
 
     if not 암호맞음:
         st.caption("🔒 기록을 보려면 위의 '기록 확인 암호'를 바르게 입력하세요.")
@@ -334,17 +394,18 @@ with st.sidebar:
             대상 = {선택: st.session_state.records[선택]}
             파일이름 = f"{선택}_기록"
 
-        # txt 로 내려받기
-        st.download_button(
-            label="📄 TXT 로 내려받기",
-            data=기록_txt만들기(대상),
-            file_name=f"{파일이름}.txt",
-            mime="text/plain",
-        )
-        # excel(xlsx) 로 내려받기
+        # Excel(xlsx) 로 내려받기
         st.download_button(
             label="📊 Excel 로 내려받기",
             data=기록_excel만들기(대상),
             file_name=f"{파일이름}.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         )
+
+        st.divider()
+        # 저장된 기록 전체 삭제 (암호를 맞힌 연구자만 볼 수 있는 버튼)
+        st.caption("⚠️ 아래는 저장된 모든 기록을 완전히 지웁니다.")
+        확인 = st.checkbox("삭제에 동의합니다")
+        if st.button("🗑 저장된 기록 전체 삭제", disabled=not 확인):
+            st.session_state.records = {}   # 모든 저장 기록 비우기
+            st.rerun()
