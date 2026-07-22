@@ -35,18 +35,15 @@ if "records" not in st.session_state:       # 이름별 저장 기록 (이름이
     st.session_state.records = {}
 if "timer_start" not in st.session_state:   # 타이머를 시작한 시각 (없으면 None)
     st.session_state.timer_start = None
+if "_ver" not in st.session_state:          # 입력칸 '버전' 번호 (초기화할 때 1씩 증가)
+    st.session_state["_ver"] = 0
 
 
-# 6) '현재 작업 초기화' 실제 처리 --------------------------
-# 아래 초기화 버튼을 누르면 이 부분이 먼저 실행되어
-# 이름칸 / 아이디어 입력칸 / AI 대화 / 시계(타이머)가 모두 비워집니다.
-# (저장된 기록은 그대로 유지됩니다.)
-if st.session_state.get("_현재작업초기화"):
-    st.session_state["_현재작업초기화"] = False
-    st.session_state.messages = []               # AI 대화 내용 지우기
-    st.session_state.timer_start = None          # 시계(타이머) 초기화 -> 다시 10:00
-    for 키 in ("이름", "학년선택", "아이디어입력"):  # 이름칸 / 학년 / 아이디어칸 비우기
-        st.session_state.pop(키, None)
+# 6) 입력칸에 붙일 버전 번호 -------------------------------
+# 이름/학년/아이디어 입력칸의 key 뒤에 이 번호를 붙입니다.
+# '현재 작업 초기화'를 누르면 이 번호가 바뀌어서 입력칸이 '새것'이 되고,
+# 그 결과 이름칸과 아이디어칸이 확실하게 비워집니다.
+버전 = st.session_state["_ver"]
 
 
 # 7) 사이드바(왼쪽 메뉴) - 이름 / 학년 / 초기화 / 암호 -----
@@ -55,14 +52,18 @@ with st.sidebar:
 
     # 이름: 이 이름이 '하나의 코드(구분자)'가 되어
     #      아이디어/프롬프트/결과물을 이 이름에 묶어 저장합니다.
-    name = st.text_input("이름을 입력하세요", key="이름")
+    name = st.text_input("이름을 입력하세요", key=f"이름_{버전}")
 
     # 나이(학년): 초등학교 5학년 / 6학년 중에서 선택
-    grade = st.radio("나이(학년)를 선택하세요", ["초등학교 5학년", "초등학교 6학년"], key="학년선택")
+    grade = st.radio(
+        "나이(학년)를 선택하세요", ["초등학교 5학년", "초등학교 6학년"], key=f"학년선택_{버전}"
+    )
 
     # 현재 작업 초기화 버튼 (저장된 기록은 남고, 지금 쓰던 것만 지움)
     if st.button("🧹 현재 작업 초기화 (기록은 유지)"):
-        st.session_state["_현재작업초기화"] = True
+        st.session_state.messages = []          # AI 대화 지우기
+        st.session_state.timer_start = None     # 시계 초기화 -> 다시 10:00
+        st.session_state["_ver"] += 1           # 버전 변경 -> 이름칸/아이디어칸 새것으로(=비워짐)
         st.rerun()  # 화면을 새로 그려서 깨끗하게 비웁니다.
 
     st.divider()
@@ -149,7 +150,7 @@ st.caption("환경오염을 해결할 나만의 아이디어를 자유롭게 적
 
 아이디어_내용 = st.text_area(
     "나의 아이디어", height=140,
-    placeholder="예) 학교에서 분리수거 게임을 만들어요!", key="아이디어입력",
+    placeholder="예) 학교에서 분리수거 게임을 만들어요!", key=f"아이디어입력_{버전}",
 )
 
 if st.button("아이디어 제출하기"):
