@@ -9,7 +9,6 @@ import csv
 import time
 import datetime
 import streamlit as st
-import streamlit.components.v1 as components
 from openai import OpenAI
 
 
@@ -98,69 +97,110 @@ def 학생정보_사이드바(페이지키):
 #    - 페이지마다 따로 돌아갑니다. (인지과제 10분, 글쓰기 10분)
 #    - 시간이 끝나면 True(종료)를 돌려주어 입력칸을 잠그게 합니다.
 # ---------------------------------------------------------
+def _타이머상태(페이지키):
+    """페이지마다 '지금까지 흐른 시간(경과)'과 '켜진 시각(시작)'을 따로 보관합니다."""
+    st.session_state.setdefault("_타이머", {})
+    return st.session_state["_타이머"].setdefault(페이지키, {"경과": 0.0, "시작": None})
+
+
+def _다른페이지_타이머_멈춤(현재페이지키):
+    """다른 페이지의 타이머를 멈춥니다.
+
+    스트림릿은 페이지를 옮기면 그 페이지의 코드가 실행돼요.
+    그때 '지금 보고 있는 페이지'가 아닌 타이머는 모두 멈춰서,
+    보고 있는 페이지의 시계만 흐르게 만듭니다.
+    """
+    지금 = time.time()
+    for 키, 상태 in st.session_state.get("_타이머", {}).items():
+        if 키 != 현재페이지키 and 상태["시작"] is not None:
+            상태["경과"] += 지금 - 상태["시작"]   # 흐른 만큼 쌓아 두고
+            상태["시작"] = None                  # 시계를 멈춥니다.
+
+
+def _남은초계산(페이지키, 총초):
+    """지금 남은 시간(초)을 계산합니다."""
+    상태 = _타이머상태(페이지키)
+    경과 = 상태["경과"]
+    if 상태["시작"] is not None:
+        경과 += time.time() - 상태["시작"]
+    return max(0, int(round(총초 - 경과)))
+
+
+def _시간글자(초):
+    """초를 08:35 같은 모양으로 바꿉니다."""
+    return f"{초 // 60:02d}:{초 % 60:02d}"
+
+
 def 타이머(페이지키, 분=10):
+    """10분 타이머. (남은초, 종료여부)를 돌려줍니다.
+
+    - '⏱ 시작'을 눌러야 시계가 흐르기 시작합니다.
+    - 다른 페이지로 넘어가는 순간 이 페이지 시계는 자동으로 멈춥니다.
+      (돌아와서 '⏱ 시작'을 다시 누르면 멈췄던 지점부터 이어집니다)
+    - 시간이 끝나면 종료=True 가 되어 입력칸이 잠깁니다.
+    """
     총초 = 분 * 60
-    시작키 = f"타이머시작_{페이지키}"
-    if 시작키 not in st.session_state:
-        st.session_state[시작키] = None   # 아직 시작하지 않음
+    _다른페이지_타이머_멈춤(페이지키)      # 다른 페이지 시계는 멈춤
+    상태 = _타이머상태(페이지키)
 
     버튼1, 가운데, 버튼2 = st.columns([1, 2, 1])
     with 버튼1:
+        # 학생이 직접 눌러야 시계가 흐르기 시작합니다.
         if st.button("⏱ 시작", key=f"시작_{페이지키}", use_container_width=True):
-            st.session_state[시작키] = time.time()   # 지금 시각 기록 -> 카운트다운 시작
+            if 상태["시작"] is None and _남은초계산(페이지키, 총초) > 0:
+                상태["시작"] = time.time()
             st.rerun()
     with 버튼2:
-        # (예전 '남은 시간 확인' 버튼이 있던 자리로 리셋을 옮겼어요)
         if st.button("리셋", key=f"리셋_{페이지키}", use_container_width=True):
-            st.session_state[시작키] = None          # 다시 10:00 으로
+            상태["경과"], 상태["시작"] = 0.0, None   # 다시 10:00 (멈춘 상태)
             st.rerun()
 
-    # 남은 시간 계산
-    if st.session_state[시작키] is not None:
-        흐른시간 = time.time() - st.session_state[시작키]
-        남은초 = max(0, int(round(총초 - 흐른시간)))
-        실행중 = 남은초 > 0
-        종료 = 남은초 <= 0        # 시작했는데 남은 시간이 0 -> 종료
-    else:
-        남은초 = 총초
+    남은초 = _남은초계산(페이지키, 총초)
+    실행중 = 상태["시작"] is not None
+    시작한적있음 = 실행중 or 상태["경과"] > 0
+
+    # 시간이 다 됐으면 시계를 멈춰 둡니다.
+    if 남은초 <= 0 and 실행중:
+        상태["시작"] = None
+        상태["경과"] = 총초
         실행중 = False
-        종료 = False
 
-    # 화면 시계는 브라우저(JS)가 1초마다 스스로 줄여서 보여 줍니다.
-    시계_HTML = f"""
-    <div style="font-family:-apple-system,'Segoe UI',sans-serif; text-align:center;">
-      <div id="disp" style="font-size:44px; font-weight:800; letter-spacing:2px; color:#1a1a1a;">10:00</div>
-      <div id="msg" style="font-size:13px; color:#888; margin-top:2px;">남은 시간 ({분}분)</div>
-    </div>
-    <script>
-      let remaining = {남은초};
-      const running = {"true" if 실행중 else "false"};
-      const disp = document.getElementById('disp');
-      const msg  = document.getElementById('msg');
-      function fmt(s){{
-        const m = Math.floor(s/60), c = s%60;
-        return String(m).padStart(2,'0') + ':' + String(c).padStart(2,'0');
-      }}
-      function render(){{
-        disp.textContent = fmt(remaining);
-        if(remaining<=0){{
-          disp.style.color='#c0392b';
-          msg.textContent="시간이 끝났어요!";
-        }}
-      }}
-      render();
-      if(running){{
-        const id = setInterval(function(){{
-          remaining -= 1;
-          if(remaining<=0){{ remaining=0; render(); clearInterval(id); }}
-          else {{ render(); }}
-        }}, 1000);
-      }}
-    </script>
-    """
-    components.html(시계_HTML, height=105)
+    종료 = 시작한적있음 and 남은초 <= 0
 
-    # 시간이 끝났으면 안내문을 크게 보여 줍니다.
+    # ── 시계 보여 주기 ──
+    def _그리기(초, 흐르는중):
+        색 = "#c0392b" if 초 <= 0 else ("#e67e22" if 초 <= 60 else "#1a1a1a")
+        안내 = "시간이 끝났어요!" if 초 <= 0 else (
+            f"남은 시간 ({분}분)" if 흐르는중 else "멈춰 있어요 · ⏱ 시작을 누르세요"
+        )
+        st.markdown(
+            f"""
+            <div style="text-align:center; margin:2px 0 6px 0;">
+              <div style="font-size:44px; font-weight:800; letter-spacing:2px; color:{색};">
+                {_시간글자(초)}
+              </div>
+              <div style="font-size:13px; color:#888;">{안내}</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+    if 실행중 and hasattr(st, "fragment"):
+        # 1초마다 이 부분만 새로 그려서 시계가 실제로 흘러가게 합니다.
+        @st.fragment(run_every=1)
+        def _시계():
+            초 = _남은초계산(페이지키, 총초)
+            _그리기(초, True)
+            if 초 <= 0:
+                # 시간이 끝나면 화면 전체를 새로 그려 입력칸을 잠급니다.
+                try:
+                    st.rerun(scope="app")
+                except TypeError:      # 예전 버전 대비
+                    st.rerun()
+        _시계()
+    else:
+        _그리기(남은초, 실행중)
+
     if 종료:
         st.error("⏰ 10분이 모두 지났어요! 이제 답을 작성하거나 저장할 수 없습니다. 수고했어요 😊")
 
@@ -277,11 +317,13 @@ def 모두_초기화(기록도_삭제=False):
       정답 입력칸, 아이디어 입력칸, 문제 번호를 전부 비웁니다.
     - 기록도_삭제=True 이면 저장된 기록(정답·아이디어·대화·채점)까지 완전히 지웁니다.
     """
-    # (1) 두 페이지의 AI 대화와 타이머를 모두 비웁니다.
+    # (1) 두 페이지의 AI 대화, 타이머, 자동제출 표시를 모두 비웁니다.
     for 키 in list(st.session_state.keys()):
         이름 = str(키)
-        if 이름.startswith("messages_") or 이름.startswith("타이머시작_"):
+        if (이름.startswith("messages_") or 이름.startswith("타이머시작_")
+                or 이름.startswith("_자동저장_") or 이름.startswith("_자동제출_")):
             st.session_state.pop(키, None)
+    st.session_state["_타이머"] = {}     # 두 페이지 시계를 모두 10:00 으로
 
     # (2) 학생 정보와 문제 진행 상태를 처음으로
     st.session_state["_이름"] = ""
