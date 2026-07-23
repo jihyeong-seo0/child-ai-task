@@ -104,18 +104,16 @@ def 타이머(페이지키, 분=10):
     if 시작키 not in st.session_state:
         st.session_state[시작키] = None   # 아직 시작하지 않음
 
-    버튼1, 버튼2, 버튼3 = st.columns([1, 1, 2])
+    버튼1, 가운데, 버튼2 = st.columns([1, 2, 1])
     with 버튼1:
         if st.button("⏱ 시작", key=f"시작_{페이지키}", use_container_width=True):
             st.session_state[시작키] = time.time()   # 지금 시각 기록 -> 카운트다운 시작
             st.rerun()
     with 버튼2:
+        # (예전 '남은 시간 확인' 버튼이 있던 자리로 리셋을 옮겼어요)
         if st.button("리셋", key=f"리셋_{페이지키}", use_container_width=True):
             st.session_state[시작키] = None          # 다시 10:00 으로
             st.rerun()
-    with 버튼3:
-        # 시간이 다 됐는지 화면에 반영하려면 한 번 새로 그려야 해서 만든 버튼이에요.
-        st.button("🔄 남은 시간 확인", key=f"새로고침_{페이지키}", use_container_width=True)
 
     # 남은 시간 계산
     if st.session_state[시작키] is not None:
@@ -147,7 +145,7 @@ def 타이머(페이지키, 분=10):
         disp.textContent = fmt(remaining);
         if(remaining<=0){{
           disp.style.color='#c0392b';
-          msg.textContent="시간이 끝났어요! '남은 시간 확인' 버튼을 눌러 주세요.";
+          msg.textContent="시간이 끝났어요!";
         }}
       }}
       render();
@@ -172,15 +170,27 @@ def 타이머(페이지키, 분=10):
 # ---------------------------------------------------------
 # 6) 이름별 저장 공간 만들기
 # ---------------------------------------------------------
+def _새연구ID():
+    """학생마다 자동으로 만들어지는 연구용 번호입니다. (예: R260723-001)"""
+    순번 = len(st.session_state["records"]) + 1
+    오늘 = datetime.date.today().strftime("%y%m%d")
+    return f"R{오늘}-{순번:03d}"
+
+
 def 이름_저장공간_준비(이름, 학년):
     if 이름 not in st.session_state["records"]:
         st.session_state["records"][이름] = {
+            "연구ID": _새연구ID(),   # 자동으로 만들어지는 연구 번호
             "학년": 학년,
             "인지과제": {},   # {문제번호: 학생이 쓴 답}
+            "채점": {},       # {문제번호: {"판정": ..., "이유": ...}}  AI 1차 채점 결과
             "글쓰기": [],     # 창의적 글쓰기로 제출한 글들
             "대화": [],       # AI와 나눈 대화 (어느 페이지인지도 함께 기록)
         }
-    st.session_state["records"][이름]["학년"] = 학년   # 항상 최신 학년으로 갱신
+    기록 = st.session_state["records"][이름]
+    기록["학년"] = 학년              # 항상 최신 학년으로 갱신
+    기록.setdefault("연구ID", _새연구ID())
+    기록.setdefault("채점", {})
 
 
 # ---------------------------------------------------------
@@ -275,8 +285,75 @@ def 초기화_버튼(페이지키):
 
 
 # ---------------------------------------------------------
-# 9) 기록을 보기 좋은 Excel(xlsx)로 만들기
-#    - 학생마다 시트를 나누고, [제출한 아이디어] -> [AI 대화] -> [인지과제 정답] 순서로 정리
+# 9) AI 1차 채점
+#    - 인지과제에 쓴 답을 AI가 먼저 채점해 줍니다.
+#    - 결과는 엑셀 파일에서만 볼 수 있고, 학생 화면에는 나오지 않아요.
+# ---------------------------------------------------------
+def AI_1차채점(이름, 문제은행):
+    """한 학생의 인지과제 답을 AI가 채점하고 결과를 저장합니다."""
+    정보 = st.session_state["records"].get(이름)
+    if not 정보:
+        return 0
+
+    문제들 = 문제은행.get(정보.get("학년", ""), [])
+    답목록 = 정보.get("인지과제", {})
+    if not 답목록:
+        return 0
+
+    cli = 클라이언트()
+    정보.setdefault("채점", {})
+    번호들 = sorted(답목록.keys())
+    진행 = st.progress(0.0, text="AI가 채점하는 중이에요...")
+
+    for 순서, 번호 in enumerate(번호들, start=1):
+        문제 = 문제들[번호] if 번호 < len(문제들) else {"문제": "", "정답": ""}
+        서술형 = str(문제.get("정답", "")).startswith("(정답 없음")
+
+        지시 = (
+            "너는 초등학생 인지과제를 채점하는 채점 도우미야. 반드시 한국어로만 답해.\n"
+            "아래 형식으로 딱 한 줄만 답해. 다른 말은 절대 쓰지 마.\n"
+            "형식:  판정|이유\n"
+            "판정은 다음 중 하나만 골라: 정답, 부분정답, 오답, 무응답\n"
+            "이유는 30자 이내로 짧게 써.\n"
+            + ("이 문제는 정답이 하나가 아닌 서술형이야. 채점 기준을 충족했으면 '정답', "
+               "일부만 충족했으면 '부분정답', 거의 못 썼으면 '오답'으로 판정해.\n"
+               if 서술형 else "")
+            + "학생이 '모르겠다'라고만 썼으면 '무응답'으로 판정해."
+        )
+        내용 = (
+            f"[문제]\n{문제.get('문제', '')}\n\n"
+            f"[모범답안 또는 채점 기준]\n{문제.get('정답', '')}\n\n"
+            f"[학생이 쓴 답]\n{답목록[번호]}"
+        )
+
+        try:
+            응답 = cli.chat.completions.create(
+                model="solar-open2",       # 모델 이름은 반드시 이 글자 그대로!
+                messages=[
+                    {"role": "system", "content": 지시},
+                    {"role": "user", "content": 내용},
+                ],
+                reasoning_effort="none",   # 추론(생각) 끄기 -> 빠르게 채점
+            )
+            글 = (응답.choices[0].message.content or "").strip()
+            if "|" in 글:
+                판정, 이유 = 글.split("|", 1)
+            else:
+                판정, 이유 = 글[:6], 글
+        except Exception:
+            판정, 이유 = "채점 실패", "잠시 후 다시 시도해 주세요."
+
+        정보["채점"][번호] = {"판정": 판정.strip(), "이유": 이유.strip()}
+        진행.progress(순서 / len(번호들), text=f"AI가 채점하는 중이에요... ({순서}/{len(번호들)})")
+
+    진행.empty()
+    return len(번호들)
+
+
+# ---------------------------------------------------------
+# 10) 기록을 보기 좋은 Excel(xlsx)로 만들기
+#     - 왼쪽(A~E열)은 인지과제, 오른쪽(G~J열)은 창의적 글쓰기입니다.
+#     - 두 과제를 나란히 두어, 대화가 많아도 아래로 길게 내려가지 않아요.
 # ---------------------------------------------------------
 def _시트이름(원본, 사용중):
     """엑셀 시트 이름에 쓸 수 없는 글자를 지우고, 31자 제한/중복을 처리합니다."""
@@ -296,7 +373,7 @@ def 기록_excel만들기(대상기록, 문제은행):
     from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 
     wb = Workbook()
-    wb.remove(wb.active)   # 기본 시트 제거
+    wb.remove(wb.active)
 
     선 = Side(style="thin", color="D9D9D9")
     테두리 = Border(left=선, right=선, top=선, bottom=선)
@@ -307,106 +384,183 @@ def 기록_excel만들기(대상기록, 문제은행):
     구획폰트 = Font(bold=True, size=12, color="1B5E20")
     구획채움 = PatternFill("solid", fgColor="E8F5E9")
     헤더폰트 = Font(bold=True, color="FFFFFF")
-    헤더채움 = PatternFill("solid", fgColor="66BB6A")
+    헤더채움A = PatternFill("solid", fgColor="66BB6A")   # 인지과제 쪽
+    헤더채움B = PatternFill("solid", fgColor="42A5F5")   # 창의적 글쓰기 쪽
+    구획채움B = PatternFill("solid", fgColor="E3F2FD")
+    구획폰트B = Font(bold=True, size=12, color="0D47A1")
     라벨폰트 = Font(bold=True)
+    노란채움 = PatternFill("solid", fgColor="FFF9C4")    # 연구자가 직접 적는 칸
 
     사용중 = set()
     for 이름, 정보 in 대상기록.items():
         ws = wb.create_sheet(title=_시트이름(이름, 사용중))
-        ws.column_dimensions["A"].width = 8
-        ws.column_dimensions["B"].width = 20
-        ws.column_dimensions["C"].width = 45
-        ws.column_dimensions["D"].width = 50
 
-        def 구획(제목):
-            """구획(소제목) 줄을 그려 줍니다."""
-            nonlocal r
-            ws.merge_cells(start_row=r, start_column=1, end_row=r, end_column=4)
-            c = ws.cell(r, 1, 제목)
-            c.font, c.fill, c.alignment = 구획폰트, 구획채움, 왼쪽
-            r += 1
+        # 열 너비: A~E = 인지과제 / F = 간격 / G~J = 창의적 글쓰기
+        너비 = {"A": 6, "B": 42, "C": 32, "D": 28, "E": 26,
+                "F": 3,
+                "G": 14, "H": 6, "I": 42, "J": 46}
+        for 열, 값 in 너비.items():
+            ws.column_dimensions[열].width = 값
 
-        def 헤더(칸들):
-            """표의 머리글 줄을 그려 줍니다."""
-            nonlocal r
-            for i, 글 in enumerate(칸들, start=1):
-                cc = ws.cell(r, i, 글)
-                cc.font, cc.fill, cc.alignment, cc.border = 헤더폰트, 헤더채움, 가운데, 테두리
-            r += 1
-
-        def 없음():
-            nonlocal r
-            ws.merge_cells(start_row=r, start_column=1, end_row=r, end_column=4)
-            ws.cell(r, 1, "(내용이 없습니다)").alignment = 왼쪽
-            r += 1
-
-        r = 1
-        # 큰 제목
-        ws.merge_cells(start_row=r, start_column=1, end_row=r, end_column=4)
-        c = ws.cell(r, 1, "학생 활동 기록")
+        # ── 맨 위: 제목 + 연구ID + 채점 결과란 ──
+        ws.merge_cells("A1:E1")
+        c = ws["A1"]; c.value = "학생 활동 기록"
         c.font, c.fill, c.alignment = 제목폰트, 제목채움, 가운데
-        ws.row_dimensions[r].height = 26
-        r += 1
+        ws.row_dimensions[1].height = 26
+
+        ws["G1"] = "연구ID"
+        ws["G1"].font, ws["G1"].alignment, ws["G1"].border = 라벨폰트, 가운데, 테두리
+        ws.merge_cells("H1:J1")
+        ws["H1"] = 정보.get("연구ID", "")
+        ws["H1"].font = Font(bold=True, size=12)
+        ws["H1"].alignment = 왼쪽
+        for 열 in ("H", "I", "J"):
+            ws[f"{열}1"].border = 테두리
 
         # 이름 / 학년
-        for 라벨, 값 in [("이름", 이름), ("학년", 정보.get("학년", ""))]:
-            c = ws.cell(r, 1, 라벨); c.font, c.alignment, c.border = 라벨폰트, 가운데, 테두리
-            ws.merge_cells(start_row=r, start_column=2, end_row=r, end_column=4)
-            ws.cell(r, 2, 값).alignment = 왼쪽
-            for col in (2, 3, 4):
-                ws.cell(r, col).border = 테두리
-            r += 1
+        ws["A2"] = "이름"; ws["A2"].font = 라벨폰트; ws["A2"].alignment = 가운데
+        ws.merge_cells("B2:C2"); ws["B2"] = 이름; ws["B2"].alignment = 왼쪽
+        ws["D2"] = "학년"; ws["D2"].font = 라벨폰트; ws["D2"].alignment = 가운데
+        ws["E2"] = 정보.get("학년", ""); ws["E2"].alignment = 왼쪽
+        for 셀 in ("A2", "B2", "C2", "D2", "E2"):
+            ws[셀].border = 테두리
+
+        # AI 1차 채점 요약 + 연구자가 직접 적는 칸
+        채점 = 정보.get("채점", {})
+        답개수 = len(정보.get("인지과제", {}))
+        세기 = {"정답": 0, "부분정답": 0, "오답": 0, "무응답": 0}
+        for v in 채점.values():
+            세기[v.get("판정")] = 세기.get(v.get("판정"), 0) + 1
+        요약 = (
+            f"제출 {답개수}문항 · 정답 {세기.get('정답', 0)} / "
+            f"부분정답 {세기.get('부분정답', 0)} / 오답 {세기.get('오답', 0)} / "
+            f"무응답 {세기.get('무응답', 0)}"
+            if 채점 else "아직 AI 채점을 실행하지 않았습니다."
+        )
+        ws["G2"] = "AI 1차 채점"; ws["G2"].font, ws["G2"].alignment, ws["G2"].border = 라벨폰트, 가운데, 테두리
+        ws.merge_cells("H2:J2"); ws["H2"] = 요약; ws["H2"].alignment = 왼쪽
+        for 열 in ("H", "I", "J"):
+            ws[f"{열}2"].border = 테두리
+
+        ws["G3"] = "연구자 최종 채점"; ws["G3"].font, ws["G3"].alignment, ws["G3"].border = 라벨폰트, 가운데, 테두리
+        ws.merge_cells("H3:J3"); ws["H3"] = ""      # 연구자가 직접 적는 빈칸
+        ws["H3"].fill = 노란채움; ws["H3"].alignment = 왼쪽
+        for 열 in ("H", "I", "J"):
+            ws[f"{열}3"].border = 테두리
+            ws[f"{열}3"].fill = 노란채움
+
+        # ─────────── 왼쪽(A~E): 인지과제 ───────────
+        r = 5
+        ws.merge_cells(start_row=r, start_column=1, end_row=r, end_column=5)
+        c = ws.cell(r, 1, "■ 인지과제")
+        c.font, c.fill, c.alignment = 구획폰트, 구획채움, 왼쪽
+        r += 1
+        for i, 글 in enumerate(["번호", "문제", "학생이 쓴 답", "정답(수기 확인용)", "AI 1차 채점"], start=1):
+            cc = ws.cell(r, i, 글)
+            cc.font, cc.fill, cc.alignment, cc.border = 헤더폰트, 헤더채움A, 가운데, 테두리
         r += 1
 
-        # ── 1. 제출한 아이디어(창의적 글쓰기) ──
-        구획("■ 제출한 아이디어 (창의적 글쓰기)")
-        헤더(["번호", "내용", "", ""])
-        글목록 = 정보.get("글쓰기", [])
-        if 글목록:
-            for i, 글 in enumerate(글목록, start=1):
-                ws.cell(r, 1, i).alignment = 가운데; ws.cell(r, 1).border = 테두리
-                ws.merge_cells(start_row=r, start_column=2, end_row=r, end_column=4)
-                ws.cell(r, 2, 글).alignment = 왼쪽
-                for col in (2, 3, 4):
-                    ws.cell(r, col).border = 테두리
-                r += 1
-        else:
-            없음()
-        r += 1
-
-        # ── 2. 생성형 AI 대화 기록 ──
-        구획("■ 생성형 AI 대화 기록")
-        헤더(["번호", "페이지", "학생 프롬프트", "AI 답변"])
-        대화목록 = 정보.get("대화", [])
-        if 대화목록:
-            for i, 쌍 in enumerate(대화목록, start=1):
-                ws.cell(r, 1, i).alignment = 가운데
-                ws.cell(r, 2, 쌍.get("페이지", "")).alignment = 왼쪽
-                ws.cell(r, 3, 쌍.get("프롬프트", "")).alignment = 왼쪽
-                ws.cell(r, 4, 쌍.get("결과물", "")).alignment = 왼쪽
-                for col in (1, 2, 3, 4):
-                    ws.cell(r, col).border = 테두리
-                r += 1
-        else:
-            없음()
-        r += 1
-
-        # ── 3. 인지과제 정답 ──
-        구획("■ 인지과제 정답")
-        헤더(["번호", "", "문제", "학생이 쓴 답"])
         답목록 = 정보.get("인지과제", {})
         문제들 = 문제은행.get(정보.get("학년", ""), [])
         if 답목록:
             for 번호 in sorted(답목록.keys()):
-                문제글 = 문제들[번호]["문제"].replace("\n", " ") if 번호 < len(문제들) else ""
+                문제 = 문제들[번호] if 번호 < len(문제들) else {}
+                판정정보 = 채점.get(번호, {})
+                채점글 = (
+                    f"{판정정보.get('판정', '')} · {판정정보.get('이유', '')}"
+                    if 판정정보 else "(미채점)"
+                )
                 ws.cell(r, 1, 번호 + 1).alignment = 가운데
-                ws.cell(r, 3, 문제글).alignment = 왼쪽
-                ws.cell(r, 4, 답목록[번호]).alignment = 왼쪽
-                for col in (1, 2, 3, 4):
+                ws.cell(r, 2, str(문제.get("문제", "")).replace("\n", " ")).alignment = 왼쪽
+                ws.cell(r, 3, 답목록[번호]).alignment = 왼쪽
+                ws.cell(r, 4, str(문제.get("정답", ""))).alignment = 왼쪽
+                ws.cell(r, 5, 채점글).alignment = 왼쪽
+                for col in range(1, 6):
                     ws.cell(r, col).border = 테두리
                 r += 1
         else:
-            없음()
+            ws.merge_cells(start_row=r, start_column=1, end_row=r, end_column=5)
+            ws.cell(r, 1, "(제출한 답이 없습니다)").alignment = 왼쪽
+            r += 1
+
+        # 인지과제 페이지에서 나눈 AI 대화도 왼쪽에 이어서
+        r += 1
+        ws.merge_cells(start_row=r, start_column=1, end_row=r, end_column=5)
+        c = ws.cell(r, 1, "■ 인지과제 페이지 · AI 대화")
+        c.font, c.fill, c.alignment = 구획폰트, 구획채움, 왼쪽
+        r += 1
+        ws.cell(r, 1, "번호"); ws.cell(r, 2, "학생 프롬프트")
+        ws.merge_cells(start_row=r, start_column=3, end_row=r, end_column=5)
+        ws.cell(r, 3, "AI 답변")
+        for col in range(1, 6):
+            cc = ws.cell(r, col)
+            cc.font, cc.fill, cc.alignment, cc.border = 헤더폰트, 헤더채움A, 가운데, 테두리
+        r += 1
+        대화_인지 = [d for d in 정보.get("대화", []) if d.get("페이지") == "인지과제"]
+        if 대화_인지:
+            for i, 쌍 in enumerate(대화_인지, start=1):
+                ws.cell(r, 1, i).alignment = 가운데
+                ws.cell(r, 2, 쌍.get("프롬프트", "")).alignment = 왼쪽
+                ws.merge_cells(start_row=r, start_column=3, end_row=r, end_column=5)
+                ws.cell(r, 3, 쌍.get("결과물", "")).alignment = 왼쪽
+                for col in range(1, 6):
+                    ws.cell(r, col).border = 테두리
+                r += 1
+        else:
+            ws.merge_cells(start_row=r, start_column=1, end_row=r, end_column=5)
+            ws.cell(r, 1, "(대화 없음)").alignment = 왼쪽
+
+        # ─────────── 오른쪽(G~J): 창의적 글쓰기 ───────────
+        r2 = 5
+        ws.merge_cells(start_row=r2, start_column=7, end_row=r2, end_column=10)
+        c = ws.cell(r2, 7, "■ 창의적 글쓰기 · 제출한 아이디어")
+        c.font, c.fill, c.alignment = 구획폰트B, 구획채움B, 왼쪽
+        r2 += 1
+        ws.cell(r2, 7, "구분"); ws.cell(r2, 8, "번호")
+        ws.merge_cells(start_row=r2, start_column=9, end_row=r2, end_column=10)
+        ws.cell(r2, 9, "내용")
+        for col in range(7, 11):
+            cc = ws.cell(r2, col)
+            cc.font, cc.fill, cc.alignment, cc.border = 헤더폰트, 헤더채움B, 가운데, 테두리
+        r2 += 1
+
+        글목록 = 정보.get("글쓰기", [])
+        if 글목록:
+            for i, 글 in enumerate(글목록, start=1):
+                ws.cell(r2, 7, "아이디어").alignment = 가운데
+                ws.cell(r2, 8, i).alignment = 가운데
+                ws.merge_cells(start_row=r2, start_column=9, end_row=r2, end_column=10)
+                ws.cell(r2, 9, 글).alignment = 왼쪽
+                for col in range(7, 11):
+                    ws.cell(r2, col).border = 테두리
+                r2 += 1
+        else:
+            ws.merge_cells(start_row=r2, start_column=7, end_row=r2, end_column=10)
+            ws.cell(r2, 7, "(제출한 아이디어가 없습니다)").alignment = 왼쪽
+            r2 += 1
+
+        r2 += 1
+        ws.merge_cells(start_row=r2, start_column=7, end_row=r2, end_column=10)
+        c = ws.cell(r2, 7, "■ 창의적 글쓰기 페이지 · AI 대화")
+        c.font, c.fill, c.alignment = 구획폰트B, 구획채움B, 왼쪽
+        r2 += 1
+        for i, 글 in enumerate(["구분", "번호", "학생 프롬프트", "AI 답변"], start=7):
+            cc = ws.cell(r2, i, 글)
+            cc.font, cc.fill, cc.alignment, cc.border = 헤더폰트, 헤더채움B, 가운데, 테두리
+        r2 += 1
+        대화_글 = [d for d in 정보.get("대화", []) if d.get("페이지") != "인지과제"]
+        if 대화_글:
+            for i, 쌍 in enumerate(대화_글, start=1):
+                ws.cell(r2, 7, "대화").alignment = 가운데
+                ws.cell(r2, 8, i).alignment = 가운데
+                ws.cell(r2, 9, 쌍.get("프롬프트", "")).alignment = 왼쪽
+                ws.cell(r2, 10, 쌍.get("결과물", "")).alignment = 왼쪽
+                for col in range(7, 11):
+                    ws.cell(r2, col).border = 테두리
+                r2 += 1
+        else:
+            ws.merge_cells(start_row=r2, start_column=7, end_row=r2, end_column=10)
+            ws.cell(r2, 7, "(대화 없음)").alignment = 왼쪽
 
     저장통 = io.BytesIO()
     wb.save(저장통)
@@ -414,8 +568,8 @@ def 기록_excel만들기(대상기록, 문제은행):
 
 
 # ---------------------------------------------------------
-# 10) 연구자 패널 (사이드바)
-#     - 암호 '0000'을 맞게 입력해야 기록을 보거나 내려받거나 지울 수 있습니다.
+# 10-2) 연구자 패널 (사이드바)
+#       - 암호 '0000'을 맞게 입력해야 채점·내려받기·삭제를 할 수 있습니다.
 # ---------------------------------------------------------
 def 연구자_패널(페이지키, 문제은행):
     with st.sidebar:
@@ -436,17 +590,27 @@ def 연구자_패널(페이지키, 문제은행):
             st.caption("아직 저장된 기록이 없어요.")
             return True
 
-        # 어떤 학생 기록을 내려받을지 선택 ('(전체)'면 모든 학생)
         이름목록 = ["(전체)"] + list(st.session_state["records"].keys())
         선택 = st.selectbox("학생 선택", 이름목록, key=f"선택_{페이지키}")
 
         if 선택 == "(전체)":
-            대상 = st.session_state["records"]
+            대상이름들 = list(st.session_state["records"].keys())
             파일이름 = "전체기록"
         else:
-            대상 = {선택: st.session_state["records"][선택]}
+            대상이름들 = [선택]
             파일이름 = f"{선택}_기록"
 
+        # AI 1차 채점 실행 버튼 (누를 때만 채점하므로 시간이 조금 걸려요)
+        if st.button("🤖 AI 1차 채점 실행", key=f"채점_{페이지키}"):
+            총합 = 0
+            for 학생 in 대상이름들:
+                총합 += AI_1차채점(학생, 문제은행)
+            if 총합:
+                st.success(f"채점 완료! ({총합}문항) 엑셀에서 확인하세요.")
+            else:
+                st.info("채점할 답이 없어요.")
+
+        대상 = {n: st.session_state["records"][n] for n in 대상이름들}
         st.download_button(
             label="📊 Excel 로 내려받기",
             data=기록_excel만들기(대상, 문제은행),
