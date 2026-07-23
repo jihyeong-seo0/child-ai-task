@@ -54,6 +54,16 @@ st.caption("환경오염을 해결할 나만의 아이디어를 자유롭게 적
     disabled=종료,
 )
 
+# 시간이 끝났는데 아직 제출하지 않은 글이 있으면, 사라지지 않도록 자동으로 제출합니다.
+글키 = f"글_{페이지키}_{버전}"
+현재글 = st.session_state.get(글키, 내글) or ""
+자동키 = f"_자동제출_{페이지키}_{버전}"
+if 종료 and 이름 and 현재글.strip() and not st.session_state.get(자동키):
+    common.이름_저장공간_준비(이름, 학년)
+    st.session_state["records"][이름]["글쓰기"].append(현재글)
+    st.session_state[자동키] = True
+    st.info("⏰ 시간이 끝나서, 지금까지 쓴 아이디어를 자동으로 제출했어요.")
+
 # 아이디어 제출 버튼 (시간이 끝나면 잠깁니다)
 if st.button("📤 아이디어 제출하기", disabled=종료):
     if 종료:
@@ -65,7 +75,12 @@ if st.button("📤 아이디어 제출하기", disabled=종료):
     else:
         common.이름_저장공간_준비(이름, 학년)
         st.session_state["records"][이름]["글쓰기"].append(내글)
+        st.session_state[f"_제출함_{페이지키}_{버전}"] = True
         st.success(f"'{이름}' 학생의 아이디어가 제출되었어요! 👍")
+
+# 아직 제출하지 않은 글이 있으면 안내합니다.
+if (not 종료) and 현재글.strip() and not st.session_state.get(f"_제출함_{페이지키}_{버전}"):
+    st.warning("📤 아직 제출하지 않았어요. **아이디어 제출하기**를 눌러 주세요.")
 
 # 지금까지 제출한 아이디어 개수
 if 이름 and 이름 in st.session_state["records"]:
