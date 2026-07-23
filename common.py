@@ -270,17 +270,37 @@ def AI대화칸(페이지키, 이름, 학년, 문제_설명=None, 높이=380):
 #    - 이름칸 / 아이디어칸 / 정답칸 / AI 대화 / 타이머를 모두 비웁니다.
 #    - 입력칸의 key 뒤에 붙는 '버전' 번호를 1 올려서, 새 입력칸으로 바꾸는 방식이에요.
 # ---------------------------------------------------------
+def 모두_초기화(기록도_삭제=False):
+    """화면에 있는 것들을 모두 처음 상태로 되돌립니다.
+
+    - 두 페이지의 AI 대화, 타이머(시계), 학생 정보(이름·학년),
+      정답 입력칸, 아이디어 입력칸, 문제 번호를 전부 비웁니다.
+    - 기록도_삭제=True 이면 저장된 기록(정답·아이디어·대화·채점)까지 완전히 지웁니다.
+    """
+    # (1) 두 페이지의 AI 대화와 타이머를 모두 비웁니다.
+    for 키 in list(st.session_state.keys()):
+        이름 = str(키)
+        if 이름.startswith("messages_") or 이름.startswith("타이머시작_"):
+            st.session_state.pop(키, None)
+
+    # (2) 학생 정보와 문제 진행 상태를 처음으로
+    st.session_state["_이름"] = ""
+    st.session_state["_학년"] = "초등학교 5학년"
+    st.session_state["문제번호"] = 0
+    st.session_state["이전학년"] = None
+
+    # (3) 입력칸(이름·정답·아이디어)을 '새것'으로 바꿔 비웁니다.
+    st.session_state["_ver"] = st.session_state.get("_ver", 0) + 1
+
+    # (4) 저장된 기록까지 지울지 여부
+    if 기록도_삭제:
+        st.session_state["records"] = {}
+
+
 def 초기화_버튼(페이지키):
     with st.sidebar:
         if st.button("🧹 현재 작업 초기화 (기록은 유지)", key=f"초기화_{페이지키}"):
-            # 두 페이지의 AI 대화와 타이머를 모두 비웁니다.
-            for 키 in list(st.session_state.keys()):
-                if str(키).startswith("messages_") or str(키).startswith("타이머시작_"):
-                    st.session_state.pop(키, None)
-            st.session_state["_이름"] = ""
-            st.session_state["_학년"] = "초등학교 5학년"
-            st.session_state["문제번호"] = 0
-            st.session_state["_ver"] += 1     # 입력칸을 '새것'으로 바꿔 비웁니다.
+            모두_초기화(기록도_삭제=False)   # 저장된 기록은 그대로 둡니다.
             st.rerun()
 
 
@@ -620,10 +640,14 @@ def 연구자_패널(페이지키, 문제은행):
         )
 
         st.divider()
-        st.caption("⚠️ 아래는 저장된 모든 기록을 완전히 지웁니다.")
+        st.caption(
+            "⚠️ 아래 버튼은 **모든 것을 처음 상태로** 되돌립니다.\n\n"
+            "저장된 기록(정답·아이디어·AI 대화·채점 결과)은 물론,\n"
+            "학생 정보·입력칸·시계까지 전부 지워지며 되돌릴 수 없습니다."
+        )
         동의 = st.checkbox("삭제에 동의합니다", key=f"동의_{페이지키}")
-        if st.button("🗑 저장된 기록 전체 삭제", disabled=not 동의, key=f"삭제_{페이지키}"):
-            st.session_state["records"] = {}
+        if st.button("🗑 전체 초기화 (기록까지 모두 삭제)", disabled=not 동의, key=f"삭제_{페이지키}"):
+            모두_초기화(기록도_삭제=True)   # 기록을 포함해 전부 초기화
             st.rerun()
 
         return True
