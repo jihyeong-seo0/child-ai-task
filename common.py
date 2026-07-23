@@ -7,6 +7,7 @@
 import io
 import csv
 import time
+import datetime
 import streamlit as st
 import streamlit.components.v1 as components
 from openai import OpenAI
@@ -462,3 +463,15 @@ def 연구자_패널(페이지키, 문제은행):
             st.rerun()
 
         return True
+
+
+# ---------------------------------------------------------
+# 11) 페이지 머리글 (두 페이지가 똑같은 모양으로 보이게 하는 함수)
+#     - 맨 위에 오늘 날짜가 자동으로 들어갑니다.
+#     - 아이콘 + 제목 + 설명 순서로 그려집니다.
+# ---------------------------------------------------------
+def 페이지_머리글(아이콘, 제목, 설명):
+    오늘 = datetime.date.today().strftime("%Y년 %m월 %d일")
+    st.caption(f"📅 {오늘}")          # 오늘 날짜 (자동)
+    st.title(f"{아이콘} {제목}")       # 큰 제목
+    st.caption(설명)                  # 제목 아래 설명 한 줄
