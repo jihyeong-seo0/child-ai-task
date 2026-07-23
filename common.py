@@ -47,6 +47,8 @@ def 세션_준비():
         st.session_state["_학년"] = "초등학교 5학년"        # 학년 (페이지 공통)
     if "records" not in st.session_state:
         st.session_state["records"] = {}                  # 이름별 저장 기록
+    if "_ver" not in st.session_state:
+        st.session_state["_ver"] = 0                      # 입력칸 '버전' (초기화용)
 
 
 # ---------------------------------------------------------
@@ -57,6 +59,7 @@ def 세션_준비():
 # ---------------------------------------------------------
 def 학생정보_사이드바(페이지키):
     학년목록 = ["초등학교 5학년", "초등학교 6학년"]
+    버전 = st.session_state.get("_ver", 0)   # 초기화할 때마다 1씩 올라가는 번호
 
     with st.sidebar:
         st.header("학생 정보")
@@ -66,7 +69,7 @@ def 학생정보_사이드바(페이지키):
         이름 = st.text_input(
             "이름을 입력하세요",
             value=st.session_state["_이름"],       # 이전에 입력한 값을 그대로 보여 줌
-            key=f"이름칸_{페이지키}",
+            key=f"이름칸_{페이지키}_{버전}",
         )
 
         # 나이(학년): 초등학교 5학년 / 6학년 중에서 선택
@@ -74,7 +77,7 @@ def 학생정보_사이드바(페이지키):
             "나이(학년)를 선택하세요",
             학년목록,
             index=학년목록.index(st.session_state["_학년"]),
-            key=f"학년칸_{페이지키}",
+            key=f"학년칸_{페이지키}_{버전}",
         )
 
         # 입력한 값을 공통 보관함에 저장 -> 다른 페이지에서도 그대로 사용
@@ -252,41 +255,210 @@ def AI대화칸(페이지키, 이름, 학년, 문제_설명=None, 높이=380):
 
 
 # ---------------------------------------------------------
-# 8) 기록을 표(CSV)로 만들어 사이드바에서 내려받기
+# 8) 현재 작업 초기화 버튼 (저장된 기록은 그대로 남습니다)
+#    - 이름칸 / 아이디어칸 / 정답칸 / AI 대화 / 타이머를 모두 비웁니다.
+#    - 입력칸의 key 뒤에 붙는 '버전' 번호를 1 올려서, 새 입력칸으로 바꾸는 방식이에요.
 # ---------------------------------------------------------
-def 기록_csv만들기(대상기록, 문제은행):
-    저장통 = io.StringIO()
-    쓰기 = csv.writer(저장통)
-    쓰기.writerow(["이름", "학년", "구분", "번호", "내용(문제/프롬프트)", "학생 답 / AI 답변"])
+def 초기화_버튼(페이지키):
+    with st.sidebar:
+        if st.button("🧹 현재 작업 초기화 (기록은 유지)", key=f"초기화_{페이지키}"):
+            # 두 페이지의 AI 대화와 타이머를 모두 비웁니다.
+            for 키 in list(st.session_state.keys()):
+                if str(키).startswith("messages_") or str(키).startswith("타이머시작_"):
+                    st.session_state.pop(키, None)
+            st.session_state["_이름"] = ""
+            st.session_state["_학년"] = "초등학교 5학년"
+            st.session_state["문제번호"] = 0
+            st.session_state["_ver"] += 1     # 입력칸을 '새것'으로 바꿔 비웁니다.
+            st.rerun()
 
+
+# ---------------------------------------------------------
+# 9) 기록을 보기 좋은 Excel(xlsx)로 만들기
+#    - 학생마다 시트를 나누고, [제출한 아이디어] -> [AI 대화] -> [인지과제 정답] 순서로 정리
+# ---------------------------------------------------------
+def _시트이름(원본, 사용중):
+    """엑셀 시트 이름에 쓸 수 없는 글자를 지우고, 31자 제한/중복을 처리합니다."""
+    금지 = '[]:*?/\\'
+    이름 = "".join(c for c in 원본 if c not in 금지).strip() or "학생"
+    이름 = 이름[:28]
+    후보, n = 이름, 1
+    while 후보 in 사용중:
+        n += 1
+        후보 = f"{이름}_{n}"[:31]
+    사용중.add(후보)
+    return 후보
+
+
+def 기록_excel만들기(대상기록, 문제은행):
+    from openpyxl import Workbook
+    from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+
+    wb = Workbook()
+    wb.remove(wb.active)   # 기본 시트 제거
+
+    선 = Side(style="thin", color="D9D9D9")
+    테두리 = Border(left=선, right=선, top=선, bottom=선)
+    가운데 = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    왼쪽 = Alignment(horizontal="left", vertical="top", wrap_text=True)
+    제목폰트 = Font(bold=True, size=14, color="FFFFFF")
+    제목채움 = PatternFill("solid", fgColor="2E7D32")
+    구획폰트 = Font(bold=True, size=12, color="1B5E20")
+    구획채움 = PatternFill("solid", fgColor="E8F5E9")
+    헤더폰트 = Font(bold=True, color="FFFFFF")
+    헤더채움 = PatternFill("solid", fgColor="66BB6A")
+    라벨폰트 = Font(bold=True)
+
+    사용중 = set()
     for 이름, 정보 in 대상기록.items():
-        문제들 = 문제은행.get(정보["학년"], [])
-        # (1) 인지과제 정답
-        for 번호 in sorted(정보["인지과제"].keys()):
-            문제글 = 문제들[번호]["문제"].replace("\n", " ") if 번호 < len(문제들) else ""
-            쓰기.writerow([이름, 정보["학년"], "인지과제", 번호 + 1, 문제글, 정보["인지과제"][번호]])
-        # (2) 창의적 글쓰기
-        for i, 글 in enumerate(정보["글쓰기"], start=1):
-            쓰기.writerow([이름, 정보["학년"], "창의적 글쓰기", i, "", 글])
-        # (3) AI 대화
-        for i, 쌍 in enumerate(정보["대화"], start=1):
-            쓰기.writerow([이름, 정보["학년"], f"AI 대화({쌍['페이지']})", i, 쌍["프롬프트"], 쌍["결과물"]])
+        ws = wb.create_sheet(title=_시트이름(이름, 사용중))
+        ws.column_dimensions["A"].width = 8
+        ws.column_dimensions["B"].width = 20
+        ws.column_dimensions["C"].width = 45
+        ws.column_dimensions["D"].width = 50
 
-    # 엑셀에서 한글이 깨지지 않도록 BOM을 앞에 붙여 줍니다.
-    return ("\ufeff" + 저장통.getvalue()).encode("utf-8")
+        def 구획(제목):
+            """구획(소제목) 줄을 그려 줍니다."""
+            nonlocal r
+            ws.merge_cells(start_row=r, start_column=1, end_row=r, end_column=4)
+            c = ws.cell(r, 1, 제목)
+            c.font, c.fill, c.alignment = 구획폰트, 구획채움, 왼쪽
+            r += 1
+
+        def 헤더(칸들):
+            """표의 머리글 줄을 그려 줍니다."""
+            nonlocal r
+            for i, 글 in enumerate(칸들, start=1):
+                cc = ws.cell(r, i, 글)
+                cc.font, cc.fill, cc.alignment, cc.border = 헤더폰트, 헤더채움, 가운데, 테두리
+            r += 1
+
+        def 없음():
+            nonlocal r
+            ws.merge_cells(start_row=r, start_column=1, end_row=r, end_column=4)
+            ws.cell(r, 1, "(내용이 없습니다)").alignment = 왼쪽
+            r += 1
+
+        r = 1
+        # 큰 제목
+        ws.merge_cells(start_row=r, start_column=1, end_row=r, end_column=4)
+        c = ws.cell(r, 1, "학생 활동 기록")
+        c.font, c.fill, c.alignment = 제목폰트, 제목채움, 가운데
+        ws.row_dimensions[r].height = 26
+        r += 1
+
+        # 이름 / 학년
+        for 라벨, 값 in [("이름", 이름), ("학년", 정보.get("학년", ""))]:
+            c = ws.cell(r, 1, 라벨); c.font, c.alignment, c.border = 라벨폰트, 가운데, 테두리
+            ws.merge_cells(start_row=r, start_column=2, end_row=r, end_column=4)
+            ws.cell(r, 2, 값).alignment = 왼쪽
+            for col in (2, 3, 4):
+                ws.cell(r, col).border = 테두리
+            r += 1
+        r += 1
+
+        # ── 1. 제출한 아이디어(창의적 글쓰기) ──
+        구획("■ 제출한 아이디어 (창의적 글쓰기)")
+        헤더(["번호", "내용", "", ""])
+        글목록 = 정보.get("글쓰기", [])
+        if 글목록:
+            for i, 글 in enumerate(글목록, start=1):
+                ws.cell(r, 1, i).alignment = 가운데; ws.cell(r, 1).border = 테두리
+                ws.merge_cells(start_row=r, start_column=2, end_row=r, end_column=4)
+                ws.cell(r, 2, 글).alignment = 왼쪽
+                for col in (2, 3, 4):
+                    ws.cell(r, col).border = 테두리
+                r += 1
+        else:
+            없음()
+        r += 1
+
+        # ── 2. 생성형 AI 대화 기록 ──
+        구획("■ 생성형 AI 대화 기록")
+        헤더(["번호", "페이지", "학생 프롬프트", "AI 답변"])
+        대화목록 = 정보.get("대화", [])
+        if 대화목록:
+            for i, 쌍 in enumerate(대화목록, start=1):
+                ws.cell(r, 1, i).alignment = 가운데
+                ws.cell(r, 2, 쌍.get("페이지", "")).alignment = 왼쪽
+                ws.cell(r, 3, 쌍.get("프롬프트", "")).alignment = 왼쪽
+                ws.cell(r, 4, 쌍.get("결과물", "")).alignment = 왼쪽
+                for col in (1, 2, 3, 4):
+                    ws.cell(r, col).border = 테두리
+                r += 1
+        else:
+            없음()
+        r += 1
+
+        # ── 3. 인지과제 정답 ──
+        구획("■ 인지과제 정답")
+        헤더(["번호", "", "문제", "학생이 쓴 답"])
+        답목록 = 정보.get("인지과제", {})
+        문제들 = 문제은행.get(정보.get("학년", ""), [])
+        if 답목록:
+            for 번호 in sorted(답목록.keys()):
+                문제글 = 문제들[번호]["문제"].replace("\n", " ") if 번호 < len(문제들) else ""
+                ws.cell(r, 1, 번호 + 1).alignment = 가운데
+                ws.cell(r, 3, 문제글).alignment = 왼쪽
+                ws.cell(r, 4, 답목록[번호]).alignment = 왼쪽
+                for col in (1, 2, 3, 4):
+                    ws.cell(r, col).border = 테두리
+                r += 1
+        else:
+            없음()
+
+    저장통 = io.BytesIO()
+    wb.save(저장통)
+    return 저장통.getvalue()
 
 
-def 기록_내려받기_사이드바(이름, 문제은행):
+# ---------------------------------------------------------
+# 10) 연구자 패널 (사이드바)
+#     - 암호 '0000'을 맞게 입력해야 기록을 보거나 내려받거나 지울 수 있습니다.
+# ---------------------------------------------------------
+def 연구자_패널(페이지키, 문제은행):
     with st.sidebar:
         st.divider()
-        st.subheader("내 기록")
-        if 이름 and 이름 in st.session_state["records"]:
-            st.download_button(
-                label="📊 내 기록 내려받기 (CSV)",
-                data=기록_csv만들기({이름: st.session_state["records"][이름]}, 문제은행),
-                file_name=f"{이름}_기록.csv",
-                mime="text/csv",
-                key=f"다운_{이름}",
-            )
+        st.subheader("저장된 기록 (연구자용)")
+
+        암호 = st.text_input(
+            "기록 확인 암호", type="password",
+            placeholder="연구자만 입력", key=f"암호_{페이지키}",
+        )
+        암호맞음 = (암호 == "0000")
+
+        if not 암호맞음:
+            st.caption("🔒 기록을 보려면 암호를 바르게 입력하세요.")
+            return False
+
+        if not st.session_state["records"]:
+            st.caption("아직 저장된 기록이 없어요.")
+            return True
+
+        # 어떤 학생 기록을 내려받을지 선택 ('(전체)'면 모든 학생)
+        이름목록 = ["(전체)"] + list(st.session_state["records"].keys())
+        선택 = st.selectbox("학생 선택", 이름목록, key=f"선택_{페이지키}")
+
+        if 선택 == "(전체)":
+            대상 = st.session_state["records"]
+            파일이름 = "전체기록"
         else:
-            st.caption("이름을 입력하고 답이나 글을 저장하면 여기에서 내려받을 수 있어요.")
+            대상 = {선택: st.session_state["records"][선택]}
+            파일이름 = f"{선택}_기록"
+
+        st.download_button(
+            label="📊 Excel 로 내려받기",
+            data=기록_excel만들기(대상, 문제은행),
+            file_name=f"{파일이름}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            key=f"다운_{페이지키}",
+        )
+
+        st.divider()
+        st.caption("⚠️ 아래는 저장된 모든 기록을 완전히 지웁니다.")
+        동의 = st.checkbox("삭제에 동의합니다", key=f"동의_{페이지키}")
+        if st.button("🗑 저장된 기록 전체 삭제", disabled=not 동의, key=f"삭제_{페이지키}"):
+            st.session_state["records"] = {}
+            st.rerun()
+
+        return True
