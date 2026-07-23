@@ -110,7 +110,19 @@ if 이름 and 이름 in st.session_state["records"]:
     placeholder="답과 함께, 어떻게 생각했는지도 적어 보세요.",
     disabled=종료,
 )
-st.caption("💡 답을 모르겠으면 **'모르겠다'** 라고 적어 주세요. 답을 적어야 다음 문제로 넘어갈 수 있어요.")
+st.caption("💡 답을 모르겠으면 **'모르겠다'** 라고 적어 주세요. "
+           "답을 적고 **저장**해야 다음 문제로 넘어갈 수 있어요.")
+
+# 시간이 끝났는데 아직 저장하지 않은 답이 있으면, 사라지지 않도록 자동으로 저장합니다.
+답키 = f"답_{학년}_{번호}_{버전}"
+현재값 = st.session_state.get(답키, 내답) or ""
+자동키 = f"_자동저장_{학년}_{번호}"
+if 종료 and 이름 and 현재값.strip() and 현재값 != 이전답 and not st.session_state.get(자동키):
+    common.이름_저장공간_준비(이름, 학년)
+    st.session_state["records"][이름]["인지과제"][번호] = 현재값
+    st.session_state[자동키] = True
+    이전답 = 현재값
+    st.info("⏰ 시간이 끝나서, 지금까지 쓴 답을 자동으로 저장했어요.")
 
 
 # 답을 저장해 주는 도우미 함수
@@ -131,9 +143,17 @@ def 답_저장하기():
 
 
 # 저장 버튼
+저장했음 = False
 if st.button("💾 정답 저장하기", disabled=종료):
     if 답_저장하기():
+        저장했음 = True
+        이전답 = 현재값
         st.success(f"{번호 + 1}번 문제의 답이 저장되었어요! 👍")
+
+# 아직 저장하지 않은 내용이 있는지 확인 (이동 버튼 안내에 사용)
+미저장 = bool(현재값.strip()) and (현재값 != 이전답)
+if 미저장 and not 종료 and not 저장했음:
+    st.warning("💾 아직 저장하지 않았어요. **정답 저장하기**를 눌러 주세요.")
 
 
 # 7) 왼쪽 / 오른쪽 이동 버튼 -------------------------------
@@ -142,8 +162,11 @@ if st.button("💾 정답 저장하기", disabled=종료):
 with 왼쪽칸:
     # 첫 문제에서는 '이전' 버튼을 누를 수 없습니다.
     if st.button("⬅️ 이전 문제", disabled=(번호 == 0), use_container_width=True):
-        st.session_state["문제번호"] -= 1
-        st.rerun()
+        if 미저장:
+            st.warning("💾 저장하지 않은 답이 있어요! **정답 저장하기**를 먼저 눌러 주세요.")
+        else:
+            st.session_state["문제번호"] -= 1
+            st.rerun()
 
 with 가운데칸:
     if 이름 and 이름 in st.session_state["records"]:
@@ -153,11 +176,12 @@ with 가운데칸:
 with 오른쪽칸:
     # 마지막 문제에서는 '다음' 버튼을 누를 수 없습니다.
     if st.button("다음 문제 ➡️", disabled=(번호 == 총문제수 - 1), use_container_width=True):
-        # 답을 적지 않으면 다음 문제로 넘어가지 못하게 막습니다.
-        if not 내답.strip():
+        # 답을 적지 않았거나, 적고도 저장하지 않으면 넘어가지 못하게 막습니다.
+        if not 현재값.strip():
             st.warning("⚠️ 답을 적어야 다음 문제로 넘어갈 수 있어요. 모르겠으면 '모르겠다'라고 적어 주세요.")
+        elif 미저장:
+            st.warning("💾 저장하지 않은 답이 있어요! **정답 저장하기**를 먼저 눌러 주세요.")
         else:
-            답_저장하기()                      # 넘어가기 전에 자동으로 저장
             st.session_state["문제번호"] += 1
             st.rerun()
 
