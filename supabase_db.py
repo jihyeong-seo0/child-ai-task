@@ -85,9 +85,8 @@ def 학생저장(이름, 조용히=True):
         연구ID = 정보.get("연구ID", "")
         학년 = 정보.get("학년", "")
         채점 = 정보.get("채점", {})
-        지금 = datetime.datetime.now().isoformat()
 
-        # (1) 참가자 정보 + AI 채점 요약
+        # (1) AI 채점 요약 만들기
         세기 = {}
         for v in 채점.values():
             판정 = v.get("판정", "")
@@ -98,23 +97,14 @@ def 학생저장(이름, 조용히=True):
             f"오답 {세기.get('오답', 0)} / 무응답 {세기.get('무응답', 0)}"
             if 채점 else "아직 AI 채점을 실행하지 않았습니다."
         )
-        _업서트(sb, "participants", [{
-            # ※ 학생 이름은 저장하지 않습니다. (연구ID로만 구분)
-            "research_id": 연구ID,
-            "grade": 학년,
-            "ai_summary": 요약,
-            "updated_at": 지금,
-        }], "research_id")
 
-        # (2) 인지과제 답 (엑셀 A~E열에 해당)
+        # (2) 인지과제 답
         문제들 = 문제은행.get(학년, [])
-        행들 = []
+        답목록 = []
         for 번호, 학생답 in 정보.get("인지과제", {}).items():
             문제 = 문제들[번호] if 번호 < len(문제들) else {}
             판정정보 = 채점.get(번호, {})
-            행들.append({
-                "research_id": 연구ID,
-                "grade": 학년,
+            답목록.append({
                 "question_no": 번호 + 1,
                 "question_type": 문제.get("유형", ""),
                 "question": str(문제.get("문제", "")).replace("\n", " "),
@@ -122,36 +112,36 @@ def 학생저장(이름, 조용히=True):
                 "correct_answer": str(문제.get("정답", "")),
                 "ai_verdict": 판정정보.get("판정", ""),
                 "ai_reason": 판정정보.get("이유", ""),
-                "saved_at": 지금,
             })
-        if 행들:
-            _업서트(sb, "cognitive_answers", 행들, "research_id,question_no")
 
-        # (3) 창의적 글쓰기 (엑셀 G~J열에 해당)
-        글행들 = [
-            {
-                "research_id": 연구ID, "grade": 학년,
-                "seq": i, "content": 글, "saved_at": 지금,
-            }
+        # (3) 창의적 글쓰기
+        글목록 = [
+            {"seq": i, "content": 글}
             for i, 글 in enumerate(정보.get("글쓰기", []), start=1)
         ]
-        if 글행들:
-            _업서트(sb, "writings", 글행들, "research_id,seq")
 
-        # (4) 생성형 AI 대화 (페이지별로 번호를 매겨 저장)
-        대화행들, 쪽번호 = [], {}
+        # (4) 생성형 AI 대화 (페이지별로 번호를 매김)
+        대화목록, 쪽번호 = [], {}
         for 쌍 in 정보.get("대화", []):
             쪽 = 쌍.get("페이지", "")
             쪽번호[쪽] = 쪽번호.get(쪽, 0) + 1
-            대화행들.append({
-                "research_id": 연구ID, "grade": 학년,
-                "page": 쪽, "seq": 쪽번호[쪽],
+            대화목록.append({
+                "page": 쪽,
+                "seq": 쪽번호[쪽],
                 "prompt": 쌍.get("프롬프트", ""),
                 "response": 쌍.get("결과물", ""),
-                "saved_at": 지금,
             })
-        if 대화행들:
-            _업서트(sb, "ai_chats", 대화행들, "research_id,page,seq")
+
+        # (5) 저장 전용 함수 하나만 호출합니다.
+        #     앱은 표를 직접 건드리지 않으므로 안전하고, RLS에도 막히지 않아요.
+        sb.rpc("save_records", {
+            "p_research_id": 연구ID,
+            "p_grade": 학년,
+            "p_ai_summary": 요약,
+            "p_answers": 답목록,
+            "p_writings": 글목록,
+            "p_chats": 대화목록,
+        }).execute()
 
         return True, f"'{이름}' 기록을 저장했어요. (연구ID: {연구ID})"
 
@@ -161,10 +151,11 @@ def 학생저장(이름, 조용히=True):
             종류, _ = 키종류()
             메시지 = (
                 f"Supabase 저장 실패 · 보안 정책(RLS)에 막혔어요. (사용 중인 키: {종류})\n"
-                "해결 방법 ① supabase_rls_fix.sql 을 실행했는지 확인하세요. "
-                "② supabase_db.py 를 최신 파일로 올렸는지 확인하세요. "
-                "③ 그래도 안 되면 SUPABASE_KEY 를 service_role(secret) 키로 바꾸세요."
+                "해결 방법 → supabase_function.sql 을 SQL Editor에서 실행하세요."
             )
+        elif "save_records" in 원문:
+            메시지 = ("Supabase 저장 실패 · 저장 함수가 없습니다. "
+                     "supabase_function.sql 을 SQL Editor에서 실행하세요.")
         else:
             메시지 = f"Supabase 저장 실패: {type(e).__name__} - {원문[:120]}"
         if not 조용히:
@@ -188,7 +179,11 @@ def 자동저장(이름):
 # 4) 저장된 기록 수 확인 (연구자 패널에서 사용)
 # ---------------------------------------------------------
 def 저장현황():
-    """Supabase에 저장된 참가자 수를 세어 봅니다."""
+    """Supabase에 저장된 참가자 수를 세어 봅니다.
+
+    ※ 안전을 위해 앱에는 읽기 권한이 없습니다.
+       저장된 내용은 Supabase 대시보드에서 확인하세요.
+    """
     if not 사용가능():
         return None, "Supabase 접속 정보가 없습니다."
     try:
@@ -286,15 +281,19 @@ def 연결진단():
     # (3) 실제로 저장이 되는지 시험용 자료를 하나 넣어 봅니다.
     try:
         sb = _클라이언트()
-        _업서트(sb, "participants",
-                [{"research_id": "TEST-0000", "grade": "테스트"}],
-                "research_id")
+        sb.rpc("save_records", {
+            "p_research_id": "TEST-0000",
+            "p_grade": "테스트",
+            "p_ai_summary": "연결 테스트",
+        }).execute()
         결과.append(("저장 시험", "✅ 성공 — 정상 작동합니다"))
         결과.append(("안내", "participants 표의 TEST-0000 줄은 지우셔도 됩니다."))
     except Exception as e:
         원문 = str(e)
-        if "row-level security" in 원문:
-            힌트 = "정책(RLS) 문제 — supabase_rls_fix.sql 을 실행했는지 확인하세요."
+        if "save_records" in 원문 or "function" in 원문.lower():
+            힌트 = "저장 함수가 없습니다 — supabase_function.sql 을 실행하세요."
+        elif "row-level security" in 원문:
+            힌트 = "정책(RLS) 문제 — supabase_function.sql 을 실행하세요."
         elif "does not exist" in 원문 or "relation" in 원문:
             힌트 = "표가 없습니다 — supabase_setup.sql 을 실행하세요."
         elif "Invalid API key" in 원문 or "JWT" in 원문:
