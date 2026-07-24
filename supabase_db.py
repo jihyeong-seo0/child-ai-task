@@ -28,10 +28,15 @@ def 사용가능():
 
 
 @st.cache_resource(show_spinner=False)
-def _클라이언트():
-    """Supabase에 연결하는 통로를 만듭니다. (한 번만 만들어 두고 계속 사용)"""
+def _연결만들기(주소, 키):
+    """실제 연결을 만듭니다. 주소나 키가 바뀌면 자동으로 새로 만들어져요."""
     from supabase import create_client
-    return create_client(st.secrets["SUPABASE_URL"], st.secrets["SUPABASE_KEY"])
+    return create_client(주소, 키)
+
+
+def _클라이언트():
+    """Supabase에 연결하는 통로를 돌려줍니다."""
+    return _연결만들기(st.secrets["SUPABASE_URL"], st.secrets["SUPABASE_KEY"])
 
 
 # ---------------------------------------------------------
@@ -79,8 +84,8 @@ def 학생저장(이름, 조용히=True):
         )
         sb.table("participants").upsert(
             {
+                # ※ 학생 이름은 저장하지 않습니다. (연구ID로만 구분)
                 "research_id": 연구ID,
-                "name": 이름,
                 "grade": 학년,
                 "ai_summary": 요약,
                 "updated_at": 지금,
@@ -96,7 +101,6 @@ def 학생저장(이름, 조용히=True):
             판정정보 = 채점.get(번호, {})
             행들.append({
                 "research_id": 연구ID,
-                "name": 이름,
                 "grade": 학년,
                 "question_no": 번호 + 1,
                 "question_type": 문제.get("유형", ""),
@@ -115,7 +119,7 @@ def 학생저장(이름, 조용히=True):
         # (3) 창의적 글쓰기 (엑셀 G~J열에 해당)
         글행들 = [
             {
-                "research_id": 연구ID, "name": 이름, "grade": 학년,
+                "research_id": 연구ID, "grade": 학년,
                 "seq": i, "content": 글, "saved_at": 지금,
             }
             for i, 글 in enumerate(정보.get("글쓰기", []), start=1)
@@ -129,7 +133,7 @@ def 학생저장(이름, 조용히=True):
             쪽 = 쌍.get("페이지", "")
             쪽번호[쪽] = 쪽번호.get(쪽, 0) + 1
             대화행들.append({
-                "research_id": 연구ID, "name": 이름, "grade": 학년,
+                "research_id": 연구ID, "grade": 학년,
                 "page": 쪽, "seq": 쪽번호[쪽],
                 "prompt": 쌍.get("프롬프트", ""),
                 "response": 쌍.get("결과물", ""),
@@ -143,7 +147,16 @@ def 학생저장(이름, 조용히=True):
         return True, f"'{이름}' 기록을 저장했어요. (연구ID: {연구ID})"
 
     except Exception as e:
-        메시지 = f"Supabase 저장 실패: {type(e).__name__} - {str(e)[:120]}"
+        원문 = str(e)
+        if "row-level security" in 원문:
+            종류, _ = 키종류()
+            메시지 = (
+                f"Supabase 저장 실패 · 보안 정책(RLS)에 막혔어요. (사용 중인 키: {종류})\n"
+                "해결 방법 ① supabase_rls_fix.sql 을 SQL Editor에서 실행하세요. "
+                "② 또는 SUPABASE_KEY 를 service_role(secret) 키로 바꾸세요."
+            )
+        else:
+            메시지 = f"Supabase 저장 실패: {type(e).__name__} - {원문[:120]}"
         if not 조용히:
             st.error(메시지)
         return False, 메시지
@@ -173,7 +186,11 @@ def 저장현황():
         결과 = sb.table("participants").select("research_id", count="exact").execute()
         return (결과.count or 0), None
     except Exception as e:
-        return None, f"{type(e).__name__} - {str(e)[:120]}"
+        원문 = str(e)
+        if "row-level security" in 원문 or "permission" in 원문.lower():
+            return None, ("읽기 권한이 없어요. (쓰기 전용 설정이라 정상입니다) "
+                          "저장된 내용은 Supabase 대시보드에서 확인하세요.")
+        return None, f"{type(e).__name__} - {원문[:120]}"
 
 
 # ---------------------------------------------------------
@@ -194,7 +211,7 @@ def 키종류():
     if 키.startswith("sb_secret_"):
         return "service_role", "비밀(secret) 키를 쓰고 있어요. 정상입니다."
     if 키.startswith("sb_publishable_"):
-        return "anon", "공개(publishable) 키예요. 비밀(secret) 키로 바꿔 주세요."
+        return "anon", "공개(publishable) 키예요. supabase_rls_fix.sql 을 실행했다면 정상 작동합니다."
 
     # (2) 예전 형식 키(JWT) — 가운데 부분을 풀어 role 값을 봅니다.
     try:
@@ -206,7 +223,33 @@ def 키종류():
         if 역할 == "service_role":
             return "service_role", "service_role 키를 쓰고 있어요. 정상입니다."
         if 역할 == "anon":
-            return "anon", "anon(공개) 키예요. service_role 키로 바꿔 주세요."
+            return "anon", "anon(공개) 키예요. supabase_rls_fix.sql 을 실행했다면 정상 작동합니다."
         return "알 수 없음", f"역할: {역할 or '확인 불가'}"
     except Exception:
         return "알 수 없음", "키 형식을 확인할 수 없습니다."
+
+
+# ---------------------------------------------------------
+# 6) 연구ID 만들기 (이름을 감추기 위한 번호)
+#    - 이름과 학년을 섞어 암호처럼 바꾼 번호예요.
+#    - 같은 이름이면 언제나 같은 번호가 나오므로,
+#      학생이 새로고침하거나 다시 접속해도 기록이 이어집니다.
+#    - 번호만 보고는 이름을 알아낼 수 없습니다. (Supabase에는 이 번호만 저장돼요)
+# ---------------------------------------------------------
+def 연구ID만들기(이름, 학년=""):
+    import hmac, hashlib
+    try:
+        소금 = st.secrets.get("ID_SALT", "") or "child-ai-task-default-salt"
+    except Exception:
+        소금 = "child-ai-task-default-salt"
+    재료 = f"{(이름 or '').strip()}|{(학년 or '').strip()}"
+    값 = hmac.new(소금.encode(), 재료.encode(), hashlib.sha256).hexdigest()
+    return "P-" + 값[:10].upper()      # 예: P-3F9A2C7B41
+
+
+def 소금_설정됨():
+    """Secrets에 ID_SALT가 들어 있는지 확인합니다."""
+    try:
+        return bool(st.secrets.get("ID_SALT"))
+    except Exception:
+        return False
