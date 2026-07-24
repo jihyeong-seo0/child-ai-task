@@ -86,7 +86,9 @@ def 학생정보_사이드바(페이지키):
         st.session_state["_학년"] = 학년
 
         if 이름:
+            번호 = supabase_db.연구ID만들기(이름, 학년)
             st.success(f"👤 {이름} · {학년}")
+            st.caption(f"참여 번호: `{번호}`")
         else:
             st.info("이름을 입력하면 모든 페이지에서 함께 사용돼요.")
 
@@ -211,17 +213,11 @@ def 타이머(페이지키, 분=10):
 # ---------------------------------------------------------
 # 6) 이름별 저장 공간 만들기
 # ---------------------------------------------------------
-def _새연구ID():
-    """학생마다 자동으로 만들어지는 연구용 번호입니다. (예: R260723-001)"""
-    순번 = len(st.session_state["records"]) + 1
-    오늘 = datetime.date.today().strftime("%y%m%d")
-    return f"R{오늘}-{순번:03d}"
-
-
 def 이름_저장공간_준비(이름, 학년):
     if 이름 not in st.session_state["records"]:
         st.session_state["records"][이름] = {
-            "연구ID": _새연구ID(),   # 자동으로 만들어지는 연구 번호
+            # 이름+학년으로 만드는 고유 번호 (같은 이름이면 언제나 같은 번호)
+            "연구ID": supabase_db.연구ID만들기(이름, 학년),
             "학년": 학년,
             "인지과제": {},   # {문제번호: 학생이 쓴 답}
             "채점": {},       # {문제번호: {"판정": ..., "이유": ...}}  AI 1차 채점 결과
@@ -230,7 +226,7 @@ def 이름_저장공간_준비(이름, 학년):
         }
     기록 = st.session_state["records"][이름]
     기록["학년"] = 학년              # 항상 최신 학년으로 갱신
-    기록.setdefault("연구ID", _새연구ID())
+    기록["연구ID"] = supabase_db.연구ID만들기(이름, 학년)
     기록.setdefault("채점", {})
 
 
@@ -686,15 +682,10 @@ def 연구자_패널(페이지키, 문제은행):
         else:
             # 지금 넣은 키가 올바른 종류인지 알려 줍니다.
             종류, 안내 = supabase_db.키종류()
-            if 종류 == "service_role":
-                st.caption(f"🔑 {안내}")
+            if 종류 in ("service_role", "anon"):
+                st.caption(f"🔑 [{종류}] {안내}")
             else:
-                st.error(
-                    f"🔑 {안내}\n\n"
-                    "Supabase → Project Settings → API 에서 "
-                    "**service_role(secret)** 키를 복사해 Secrets의 "
-                    "SUPABASE_KEY 에 넣어 주세요."
-                )
+                st.error(f"🔑 {안내}")
 
             if st.button("☁️ Supabase에 저장하기", key=f"업로드_{페이지키}"):
                 성공수, 실패목록 = 0, []
@@ -721,6 +712,26 @@ def 연구자_패널(페이지키, 문제은행):
             최근 = st.session_state.get("_supabase_최근")
             if 최근:
                 st.caption(f"최근 자동 저장 · {최근}")
+
+        # ── 이름 ↔ 연구ID 대조 도구 ──
+        #    Supabase에는 이름이 저장되지 않으므로,
+        #    나중에 누구의 자료인지 확인할 때 여기서 번호를 찾습니다.
+        st.divider()
+        st.caption("🔎 이름 → 연구ID 찾기")
+        if not supabase_db.소금_설정됨():
+            st.warning("Secrets에 ID_SALT 를 넣어 주세요. (번호를 안전하게 만드는 데 필요해요)")
+        찾을이름 = st.text_input("학생 이름", key=f"조회이름_{페이지키}")
+        찾을학년 = st.selectbox(
+            "학년", ["초등학교 5학년", "초등학교 6학년"], key=f"조회학년_{페이지키}"
+        )
+        if 찾을이름.strip():
+            st.code(supabase_db.연구ID만들기(찾을이름, 찾을학년), language=None)
+
+        # 지금 이 기기에서 참여한 학생들의 번호 모음
+        if st.session_state["records"]:
+            with st.expander("이 기기에서 참여한 학생 목록"):
+                for 학생, 정보 in st.session_state["records"].items():
+                    st.write(f"- {학생} ({정보.get('학년','')}) → `{정보.get('연구ID','')}`")
 
         st.divider()
         st.caption(
