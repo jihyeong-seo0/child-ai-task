@@ -700,6 +700,12 @@ def 연구자_패널(페이지키, 문제은행):
                 for 줄 in 실패목록:
                     st.error(줄)
 
+            # 문제가 있을 때 원인을 찾아 주는 진단 도구
+            if st.button("🧪 연결 테스트", key=f"진단_{페이지키}"):
+                for 항목, 값 in supabase_db.연결진단():
+                    st.write(f"**{항목}**")
+                    st.code(str(값), language=None)
+
             # 지금 Supabase에 몇 명이 저장되어 있는지 확인
             if st.button("🔎 저장 현황 확인", key=f"현황_{페이지키}"):
                 수, 오류 = supabase_db.저장현황()
