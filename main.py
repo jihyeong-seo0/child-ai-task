@@ -7,6 +7,7 @@
 
 import streamlit as st
 import common                    # 두 페이지가 함께 쓰는 공통 기능
+import supabase_db               # Supabase 저장 기능
 from tasks import 문제은행, 영상주소   # 학년별 인지과제 문제 모음 / 영상 주소
 
 
@@ -122,6 +123,7 @@ if 종료 and 이름 and 현재값.strip() and 현재값 != 이전답 and not st
     st.session_state["records"][이름]["인지과제"][번호] = 현재값
     st.session_state[자동키] = True
     이전답 = 현재값
+    supabase_db.자동저장(이름)      # Supabase에도 저장
     st.info("⏰ 시간이 끝나서, 지금까지 쓴 답을 자동으로 저장했어요.")
 
 
@@ -139,6 +141,7 @@ def 답_저장하기():
         return False
     common.이름_저장공간_준비(이름, 학년)
     st.session_state["records"][이름]["인지과제"][번호] = 내답
+    supabase_db.자동저장(이름)      # Supabase에도 저장
     return True
 
 
