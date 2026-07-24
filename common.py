@@ -10,6 +10,7 @@ import time
 import datetime
 import streamlit as st
 from openai import OpenAI
+import supabase_db          # Supabase(온라인 DB) 저장 기능
 
 
 # ---------------------------------------------------------
@@ -303,6 +304,7 @@ def AI대화칸(페이지키, 이름, 학년, 문제_설명=None, 높이=380):
         st.session_state["records"][이름]["대화"].append(
             {"페이지": 페이지키, "프롬프트": 질문, "결과물": 답변}
         )
+        supabase_db.자동저장(이름)   # 대화 내용을 Supabase에도 저장
 
 
 # ---------------------------------------------------------
@@ -409,6 +411,7 @@ def AI_1차채점(이름, 문제은행):
         진행.progress(순서 / len(번호들), text=f"AI가 채점하는 중이에요... ({순서}/{len(번호들)})")
 
     진행.empty()
+    supabase_db.자동저장(이름)   # 채점 결과를 Supabase에도 저장
     return len(번호들)
 
 
@@ -657,10 +660,8 @@ def 연구자_패널(페이지키, 문제은행):
 
         if 선택 == "(전체)":
             대상이름들 = list(st.session_state["records"].keys())
-            파일이름 = "전체기록"
         else:
             대상이름들 = [선택]
-            파일이름 = f"{선택}_기록"
 
         # AI 1차 채점 실행 버튼 (누를 때만 채점하므로 시간이 조금 걸려요)
         if st.button("🤖 AI 1차 채점 실행", key=f"채점_{페이지키}"):
@@ -672,14 +673,41 @@ def 연구자_패널(페이지키, 문제은행):
             else:
                 st.info("채점할 답이 없어요.")
 
-        대상 = {n: st.session_state["records"][n] for n in 대상이름들}
-        st.download_button(
-            label="📊 Excel 로 내려받기",
-            data=기록_excel만들기(대상, 문제은행),
-            file_name=f"{파일이름}.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            key=f"다운_{페이지키}",
-        )
+        # ── Supabase(온라인 데이터베이스) 저장 ──
+        st.divider()
+        st.caption("☁️ Supabase 저장")
+
+        if not supabase_db.사용가능():
+            st.warning(
+                "Supabase 접속 정보가 없어요.\n\n"
+                "Secrets에 SUPABASE_URL 과 SUPABASE_KEY 를 넣어 주세요."
+            )
+        else:
+            if st.button("☁️ Supabase에 저장하기", key=f"업로드_{페이지키}"):
+                성공수, 실패목록 = 0, []
+                for 학생 in 대상이름들:
+                    성공, 메시지 = supabase_db.학생저장(학생, 조용히=True)
+                    if 성공:
+                        성공수 += 1
+                    else:
+                        실패목록.append(f"{학생}: {메시지}")
+                if 성공수:
+                    st.success(f"{성공수}명의 기록을 저장했어요.")
+                for 줄 in 실패목록:
+                    st.error(줄)
+
+            # 지금 Supabase에 몇 명이 저장되어 있는지 확인
+            if st.button("🔎 저장 현황 확인", key=f"현황_{페이지키}"):
+                수, 오류 = supabase_db.저장현황()
+                if 오류:
+                    st.error(f"확인 실패 · {오류}")
+                else:
+                    st.info(f"Supabase에 저장된 참가자: {수}명")
+
+            # 학생이 답을 저장할 때마다 자동으로 올라간 결과
+            최근 = st.session_state.get("_supabase_최근")
+            if 최근:
+                st.caption(f"최근 자동 저장 · {최근}")
 
         st.divider()
         st.caption(
