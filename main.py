@@ -20,7 +20,6 @@ st.set_page_config(page_title="인지과제", page_icon="🧠")
 #    - 이름과 학년은 한 번만 입력하면 다른 페이지에도 그대로 이어집니다.
 common.세션_준비()
 이름, 학년 = common.학생정보_사이드바(페이지키)
-common.초기화_버튼(페이지키)   # 🧹 현재 작업 초기화 (저장된 기록은 남습니다)
 
 버전 = st.session_state["_ver"]   # 초기화하면 올라가는 번호 (입력칸 비우기에 사용)
 
@@ -123,6 +122,10 @@ if 종료 and 이름 and 현재값.strip() and 현재값 != 이전답 and not st
     st.session_state["records"][이름]["인지과제"][번호] = 현재값
     st.session_state[자동키] = True
     이전답 = 현재값
+    # 시간이 끝났을 때도 AI 1차 채점을 자동으로 한 번 실행합니다.
+    if not st.session_state.get("_종료채점됨"):
+        st.session_state["_종료채점됨"] = True
+        common.AI_1차채점(이름, 문제은행, 표시문구="정리하는 중이에요...")
     supabase_db.자동저장(이름)      # Supabase에도 저장
     st.info("⏰ 시간이 끝나서, 지금까지 쓴 답을 자동으로 저장했어요.")
 
@@ -180,6 +183,9 @@ if 번호 == 총문제수 - 1:
         else:
             답_저장하기()                  # 마지막 답까지 저장
             푼개수 = len(st.session_state["records"][이름]["인지과제"])
+            # AI 1차 채점을 자동으로 실행합니다.
+            # (채점 결과는 학생에게 보이지 않고 데이터베이스에만 저장돼요)
+            common.AI_1차채점(이름, 문제은행, 표시문구="제출하는 중이에요...")
             성공, 메시지 = supabase_db.학생저장(이름, 조용히=True)
             st.session_state[제출키] = True
             if 성공:
