@@ -174,3 +174,39 @@ def 저장현황():
         return (결과.count or 0), None
     except Exception as e:
         return None, f"{type(e).__name__} - {str(e)[:120]}"
+
+
+# ---------------------------------------------------------
+# 5) 지금 사용 중인 키가 어떤 종류인지 확인
+#    - service_role(비밀) 키라야 RLS 보안 설정을 통과해 저장할 수 있어요.
+#    - anon(공개) 키를 넣으면 "row-level security policy" 오류가 납니다.
+# ---------------------------------------------------------
+def 키종류():
+    """돌려주는 값: ("service_role" / "anon" / "알 수 없음", 안내문)"""
+    try:
+        키 = st.secrets.get("SUPABASE_KEY", "") or ""
+    except Exception:
+        키 = ""
+    if not 키:
+        return "없음", "SUPABASE_KEY가 비어 있습니다."
+
+    # (1) 새 형식 키
+    if 키.startswith("sb_secret_"):
+        return "service_role", "비밀(secret) 키를 쓰고 있어요. 정상입니다."
+    if 키.startswith("sb_publishable_"):
+        return "anon", "공개(publishable) 키예요. 비밀(secret) 키로 바꿔 주세요."
+
+    # (2) 예전 형식 키(JWT) — 가운데 부분을 풀어 role 값을 봅니다.
+    try:
+        import base64, json
+        가운데 = 키.split(".")[1]
+        가운데 += "=" * (-len(가운데) % 4)          # 길이 맞추기
+        정보 = json.loads(base64.urlsafe_b64decode(가운데))
+        역할 = 정보.get("role", "")
+        if 역할 == "service_role":
+            return "service_role", "service_role 키를 쓰고 있어요. 정상입니다."
+        if 역할 == "anon":
+            return "anon", "anon(공개) 키예요. service_role 키로 바꿔 주세요."
+        return "알 수 없음", f"역할: {역할 or '확인 불가'}"
+    except Exception:
+        return "알 수 없음", "키 형식을 확인할 수 없습니다."
