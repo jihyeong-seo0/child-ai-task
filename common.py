@@ -308,19 +308,26 @@ def AI대화칸(페이지키, 이름, 학년, 문제_설명=None, 높이=380):
 #    - 이름칸 / 아이디어칸 / 정답칸 / AI 대화 / 타이머를 모두 비웁니다.
 #    - 입력칸의 key 뒤에 붙는 '버전' 번호를 1 올려서, 새 입력칸으로 바꾸는 방식이에요.
 # ---------------------------------------------------------
-def 모두_초기화(기록도_삭제=False):
-    """화면에 있는 것들을 모두 처음 상태로 되돌립니다.
+def 모두_초기화(기록도_삭제=True):
+    """화면을 처음 상태로 되돌립니다. (다음 학생이 쓸 수 있게)
 
-    - 두 페이지의 AI 대화, 타이머(시계), 학생 정보(이름·학년),
-      정답 입력칸, 아이디어 입력칸, 문제 번호를 전부 비웁니다.
-    - 기록도_삭제=True 이면 저장된 기록(정답·아이디어·대화·채점)까지 완전히 지웁니다.
+    비워지는 것:
+      · 답안 작성란, 아이디어 작성란
+      · 생성형 AI 대화 기록과 입력란
+      · 학생 정보(이름·학년)
+      · 타이머(두 페이지 모두 10:00으로)
+      · 문제 번호(1번 문제로)
+
+    ※ Supabase에 이미 저장된 자료는 그대로 남습니다.
+      (자동 저장되므로 여기서 지워도 연구 자료는 안전해요)
     """
     # (1) 두 페이지의 AI 대화, 타이머, 자동제출 표시를 모두 비웁니다.
     for 키 in list(st.session_state.keys()):
         이름 = str(키)
         if (이름.startswith("messages_") or 이름.startswith("타이머시작_")
                 or 이름.startswith("_자동저장_") or 이름.startswith("_자동제출_")
-                or 이름.startswith("_최종제출_") or 이름.startswith("_제출함_")):
+                or 이름.startswith("_최종제출_") or 이름.startswith("_제출함_")
+                or 이름 == "_종료채점됨" or 이름 == "_supabase_최근"):
             st.session_state.pop(키, None)
     st.session_state["_타이머"] = {}     # 두 페이지 시계를 모두 10:00 으로
 
@@ -338,20 +345,16 @@ def 모두_초기화(기록도_삭제=False):
         st.session_state["records"] = {}
 
 
-def 초기화_버튼(페이지키):
-    with st.sidebar:
-        if st.button("🧹 현재 작업 초기화 (기록은 유지)", key=f"초기화_{페이지키}"):
-            모두_초기화(기록도_삭제=False)   # 저장된 기록은 그대로 둡니다.
-            st.rerun()
-
-
 # ---------------------------------------------------------
 # 9) AI 1차 채점
 #    - 인지과제에 쓴 답을 AI가 먼저 채점해 줍니다.
 #    - 결과는 엑셀 파일에서만 볼 수 있고, 학생 화면에는 나오지 않아요.
 # ---------------------------------------------------------
-def AI_1차채점(이름, 문제은행):
-    """한 학생의 인지과제 답을 AI가 채점하고 결과를 저장합니다."""
+def AI_1차채점(이름, 문제은행, 표시문구="처리하는 중이에요..."):
+    """한 학생의 인지과제 답을 AI가 채점하고 결과를 저장합니다.
+
+    ※ 채점 결과는 학생에게 보이지 않고 데이터베이스에만 저장됩니다.
+    """
     정보 = st.session_state["records"].get(이름)
     if not 정보:
         return 0
@@ -364,7 +367,7 @@ def AI_1차채점(이름, 문제은행):
     cli = 클라이언트()
     정보.setdefault("채점", {})
     번호들 = sorted(답목록.keys())
-    진행 = st.progress(0.0, text="AI가 채점하는 중이에요...")
+    진행 = st.progress(0.0, text=표시문구)
 
     for 순서, 번호 in enumerate(번호들, start=1):
         문제 = 문제들[번호] if 번호 < len(문제들) else {"문제": "", "정답": ""}
@@ -405,7 +408,7 @@ def AI_1차채점(이름, 문제은행):
             판정, 이유 = "채점 실패", "잠시 후 다시 시도해 주세요."
 
         정보["채점"][번호] = {"판정": 판정.strip(), "이유": 이유.strip()}
-        진행.progress(순서 / len(번호들), text=f"AI가 채점하는 중이에요... ({순서}/{len(번호들)})")
+        진행.progress(순서 / len(번호들), text=f"{표시문구} ({순서}/{len(번호들)})")
 
     진행.empty()
     supabase_db.자동저장(이름)   # 채점 결과를 Supabase에도 저장
@@ -634,98 +637,31 @@ def 기록_excel만들기(대상기록, 문제은행):
 #       - 암호 '0000'을 맞게 입력해야 채점·내려받기·삭제를 할 수 있습니다.
 # ---------------------------------------------------------
 def 연구자_패널(페이지키, 문제은행):
+    """사이드바 맨 아래 '설정 (연구자용)' 영역.
+
+    암호(0000)를 맞게 입력하면 두 가지를 쓸 수 있습니다.
+      ① 이름 → 연구ID 찾기
+      ② 전체 기록 초기화 (화면만 비움 · 데이터베이스 자료는 그대로)
+    """
     with st.sidebar:
         st.divider()
-        st.subheader("저장된 기록 (연구자용)")
+        st.subheader("설정 (연구자용)")
 
         암호 = st.text_input(
             "기록 확인 암호", type="password",
             placeholder="연구자만 입력", key=f"암호_{페이지키}",
         )
-        암호맞음 = (암호 == "0000")
-
-        if not 암호맞음:
-            st.caption("🔒 기록을 보려면 암호를 바르게 입력하세요.")
+        if 암호 != "0000":
+            st.caption("🔒 암호를 입력하면 설정을 볼 수 있어요.")
             return False
 
-        if not st.session_state["records"]:
-            st.caption("아직 저장된 기록이 없어요.")
-            return True
-
-        이름목록 = ["(전체)"] + list(st.session_state["records"].keys())
-        선택 = st.selectbox("학생 선택", 이름목록, key=f"선택_{페이지키}")
-
-        if 선택 == "(전체)":
-            대상이름들 = list(st.session_state["records"].keys())
-        else:
-            대상이름들 = [선택]
-
-        # AI 1차 채점 실행 버튼 (누를 때만 채점하므로 시간이 조금 걸려요)
-        if st.button("🤖 AI 1차 채점 실행", key=f"채점_{페이지키}"):
-            총합 = 0
-            for 학생 in 대상이름들:
-                총합 += AI_1차채점(학생, 문제은행)
-            if 총합:
-                st.success(f"채점 완료! ({총합}문항) 엑셀에서 확인하세요.")
-            else:
-                st.info("채점할 답이 없어요.")
-
-        # ── Supabase(온라인 데이터베이스) 저장 ──
-        st.divider()
-        st.caption("☁️ Supabase 저장")
-
-        if not supabase_db.사용가능():
-            st.warning(
-                "Supabase 접속 정보가 없어요.\n\n"
-                "Secrets에 SUPABASE_URL 과 SUPABASE_KEY 를 넣어 주세요."
-            )
-        else:
-            # 지금 넣은 키가 올바른 종류인지 알려 줍니다.
-            종류, 안내 = supabase_db.키종류()
-            if 종류 in ("service_role", "anon"):
-                st.caption(f"🔑 [{종류}] {안내}")
-            else:
-                st.error(f"🔑 {안내}")
-
-            if st.button("☁️ Supabase에 저장하기", key=f"업로드_{페이지키}"):
-                성공수, 실패목록 = 0, []
-                for 학생 in 대상이름들:
-                    성공, 메시지 = supabase_db.학생저장(학생, 조용히=True)
-                    if 성공:
-                        성공수 += 1
-                    else:
-                        실패목록.append(f"{학생}: {메시지}")
-                if 성공수:
-                    st.success(f"{성공수}명의 기록을 저장했어요.")
-                for 줄 in 실패목록:
-                    st.error(줄)
-
-            # 문제가 있을 때 원인을 찾아 주는 진단 도구
-            if st.button("🧪 연결 테스트", key=f"진단_{페이지키}"):
-                for 항목, 값 in supabase_db.연결진단():
-                    st.write(f"**{항목}**")
-                    st.code(str(값), language=None)
-
-            # 지금 Supabase에 몇 명이 저장되어 있는지 확인
-            if st.button("🔎 저장 현황 확인", key=f"현황_{페이지키}"):
-                수, 오류 = supabase_db.저장현황()
-                if 오류:
-                    st.error(f"확인 실패 · {오류}")
-                else:
-                    st.info(f"Supabase에 저장된 참가자: {수}명")
-
-            # 학생이 답을 저장할 때마다 자동으로 올라간 결과
-            최근 = st.session_state.get("_supabase_최근")
-            if 최근:
-                st.caption(f"최근 자동 저장 · {최근}")
-
-        # ── 이름 ↔ 연구ID 대조 도구 ──
+        # ── ① 이름 → 연구ID 찾기 ──
         #    Supabase에는 이름이 저장되지 않으므로,
         #    나중에 누구의 자료인지 확인할 때 여기서 번호를 찾습니다.
-        st.divider()
         st.caption("🔎 이름 → 연구ID 찾기")
         if not supabase_db.소금_설정됨():
-            st.warning("Secrets에 ID_SALT 를 넣어 주세요. (번호를 안전하게 만드는 데 필요해요)")
+            st.warning("Secrets에 ID_SALT 를 넣어 주세요.")
+
         찾을이름 = st.text_input("학생 이름", key=f"조회이름_{페이지키}")
         찾을학년 = st.selectbox(
             "학년", ["초등학교 5학년", "초등학교 6학년"], key=f"조회학년_{페이지키}"
@@ -735,20 +671,29 @@ def 연구자_패널(페이지키, 문제은행):
 
         # 지금 이 기기에서 참여한 학생들의 번호 모음
         if st.session_state["records"]:
-            with st.expander("이 기기에서 참여한 학생 목록"):
+            with st.expander("이 기기에서 참여한 학생"):
                 for 학생, 정보 in st.session_state["records"].items():
                     st.write(f"- {학생} ({정보.get('학년','')}) → `{정보.get('연구ID','')}`")
 
+        # ── ② 전체 기록 초기화 ──
         st.divider()
         st.caption(
-            "⚠️ 아래 버튼은 **모든 것을 처음 상태로** 되돌립니다.\n\n"
-            "저장된 기록(정답·아이디어·AI 대화·채점 결과)은 물론,\n"
-            "학생 정보·입력칸·시계까지 전부 지워지며 되돌릴 수 없습니다."
+            "🗑 전체 기록 초기화\n\n"
+            "화면에 있는 답안·AI 대화·학생 정보·타이머를 모두 비우고 "
+            "인지과제 첫 화면으로 돌아갑니다.\n"
+            "데이터베이스에 저장된 자료는 그대로 남아요."
         )
-        동의 = st.checkbox("삭제에 동의합니다", key=f"동의_{페이지키}")
-        if st.button("🗑 전체 초기화 (기록까지 모두 삭제)", disabled=not 동의, key=f"삭제_{페이지키}"):
-            모두_초기화(기록도_삭제=True)   # 기록을 포함해 전부 초기화
-            st.rerun()
+        동의 = st.checkbox("초기화에 동의합니다", key=f"동의_{페이지키}")
+        if st.button("🗑 전체 기록 초기화", disabled=not 동의, key=f"초기화_{페이지키}"):
+            모두_초기화()
+            # 창의적 글쓰기 페이지에 있었다면 인지과제 페이지로 돌아갑니다.
+            if 페이지키 != "인지과제":
+                try:
+                    st.switch_page("main.py")
+                except Exception:
+                    st.rerun()
+            else:
+                st.rerun()
 
         return True
 
