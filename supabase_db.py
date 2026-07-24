@@ -39,6 +39,22 @@ def _클라이언트():
     return _연결만들기(st.secrets["SUPABASE_URL"], st.secrets["SUPABASE_KEY"])
 
 
+def _업서트(sb, 표이름, 행들, 충돌키):
+    """저장(있으면 덮어쓰기)합니다.
+
+    returning="minimal" 이 핵심이에요.
+    이렇게 하면 '저장한 내용을 다시 읽어서 돌려주기'를 하지 않습니다.
+    읽기 권한을 막아 둔 상태에서도 저장이 되도록 하기 위해서예요.
+    (이 설정이 없으면 'row-level security' 오류가 납니다)
+    """
+    표 = sb.table(표이름)
+    try:
+        return 표.upsert(행들, on_conflict=충돌키, returning="minimal").execute()
+    except TypeError:
+        # 라이브러리 버전이 낮아 returning 을 모를 때를 대비한 예비 방법
+        return 표.upsert(행들, on_conflict=충돌키).execute()
+
+
 # ---------------------------------------------------------
 # 2) 한 학생의 기록을 통째로 저장(덮어쓰기)
 #    - 같은 연구ID로 다시 저장하면 새로 쌓이지 않고 최신 내용으로 바뀝니다.
@@ -82,16 +98,13 @@ def 학생저장(이름, 조용히=True):
             f"오답 {세기.get('오답', 0)} / 무응답 {세기.get('무응답', 0)}"
             if 채점 else "아직 AI 채점을 실행하지 않았습니다."
         )
-        sb.table("participants").upsert(
-            {
-                # ※ 학생 이름은 저장하지 않습니다. (연구ID로만 구분)
-                "research_id": 연구ID,
-                "grade": 학년,
-                "ai_summary": 요약,
-                "updated_at": 지금,
-            },
-            on_conflict="research_id",
-        ).execute()
+        _업서트(sb, "participants", [{
+            # ※ 학생 이름은 저장하지 않습니다. (연구ID로만 구분)
+            "research_id": 연구ID,
+            "grade": 학년,
+            "ai_summary": 요약,
+            "updated_at": 지금,
+        }], "research_id")
 
         # (2) 인지과제 답 (엑셀 A~E열에 해당)
         문제들 = 문제은행.get(학년, [])
@@ -112,9 +125,7 @@ def 학생저장(이름, 조용히=True):
                 "saved_at": 지금,
             })
         if 행들:
-            sb.table("cognitive_answers").upsert(
-                행들, on_conflict="research_id,question_no"
-            ).execute()
+            _업서트(sb, "cognitive_answers", 행들, "research_id,question_no")
 
         # (3) 창의적 글쓰기 (엑셀 G~J열에 해당)
         글행들 = [
@@ -125,7 +136,7 @@ def 학생저장(이름, 조용히=True):
             for i, 글 in enumerate(정보.get("글쓰기", []), start=1)
         ]
         if 글행들:
-            sb.table("writings").upsert(글행들, on_conflict="research_id,seq").execute()
+            _업서트(sb, "writings", 글행들, "research_id,seq")
 
         # (4) 생성형 AI 대화 (페이지별로 번호를 매겨 저장)
         대화행들, 쪽번호 = [], {}
@@ -140,9 +151,7 @@ def 학생저장(이름, 조용히=True):
                 "saved_at": 지금,
             })
         if 대화행들:
-            sb.table("ai_chats").upsert(
-                대화행들, on_conflict="research_id,page,seq"
-            ).execute()
+            _업서트(sb, "ai_chats", 대화행들, "research_id,page,seq")
 
         return True, f"'{이름}' 기록을 저장했어요. (연구ID: {연구ID})"
 
@@ -152,8 +161,9 @@ def 학생저장(이름, 조용히=True):
             종류, _ = 키종류()
             메시지 = (
                 f"Supabase 저장 실패 · 보안 정책(RLS)에 막혔어요. (사용 중인 키: {종류})\n"
-                "해결 방법 ① supabase_rls_fix.sql 을 SQL Editor에서 실행하세요. "
-                "② 또는 SUPABASE_KEY 를 service_role(secret) 키로 바꾸세요."
+                "해결 방법 ① supabase_rls_fix.sql 을 실행했는지 확인하세요. "
+                "② supabase_db.py 를 최신 파일로 올렸는지 확인하세요. "
+                "③ 그래도 안 되면 SUPABASE_KEY 를 service_role(secret) 키로 바꾸세요."
             )
         else:
             메시지 = f"Supabase 저장 실패: {type(e).__name__} - {원문[:120]}"
@@ -253,3 +263,45 @@ def 소금_설정됨():
         return bool(st.secrets.get("ID_SALT"))
     except Exception:
         return False
+
+
+# ---------------------------------------------------------
+# 7) 연결 진단 (연구자 패널의 '🧪 연결 테스트' 버튼에서 사용)
+#    - 어디에 접속하는지, 저장이 되는지 하나씩 확인해 줍니다.
+# ---------------------------------------------------------
+def 연결진단():
+    결과 = []
+
+    # (1) 접속 주소 — SQL을 실행한 프로젝트와 같은지 확인용
+    try:
+        주소 = st.secrets.get("SUPABASE_URL", "") or ""
+    except Exception:
+        주소 = ""
+    결과.append(("접속 주소", 주소 or "(없음)"))
+
+    # (2) 키 종류
+    종류, 안내 = 키종류()
+    결과.append(("키 종류", f"{종류} · {안내}"))
+
+    # (3) 실제로 저장이 되는지 시험용 자료를 하나 넣어 봅니다.
+    try:
+        sb = _클라이언트()
+        _업서트(sb, "participants",
+                [{"research_id": "TEST-0000", "grade": "테스트"}],
+                "research_id")
+        결과.append(("저장 시험", "✅ 성공 — 정상 작동합니다"))
+        결과.append(("안내", "participants 표의 TEST-0000 줄은 지우셔도 됩니다."))
+    except Exception as e:
+        원문 = str(e)
+        if "row-level security" in 원문:
+            힌트 = "정책(RLS) 문제 — supabase_rls_fix.sql 을 실행했는지 확인하세요."
+        elif "does not exist" in 원문 or "relation" in 원문:
+            힌트 = "표가 없습니다 — supabase_setup.sql 을 실행하세요."
+        elif "Invalid API key" in 원문 or "JWT" in 원문:
+            힌트 = "키가 잘못됐습니다 — SUPABASE_KEY 를 다시 확인하세요."
+        else:
+            힌트 = "아래 원문을 그대로 알려 주세요."
+        결과.append(("저장 시험", f"❌ 실패 — {힌트}"))
+        결과.append(("오류 원문", 원문[:300]))
+
+    return 결과
