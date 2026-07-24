@@ -323,7 +323,8 @@ def 모두_초기화(기록도_삭제=False):
     for 키 in list(st.session_state.keys()):
         이름 = str(키)
         if (이름.startswith("messages_") or 이름.startswith("타이머시작_")
-                or 이름.startswith("_자동저장_") or 이름.startswith("_자동제출_")):
+                or 이름.startswith("_자동저장_") or 이름.startswith("_자동제출_")
+                or 이름.startswith("_최종제출_") or 이름.startswith("_제출함_")):
             st.session_state.pop(키, None)
     st.session_state["_타이머"] = {}     # 두 페이지 시계를 모두 10:00 으로
 
@@ -683,6 +684,18 @@ def 연구자_패널(페이지키, 문제은행):
                 "Secrets에 SUPABASE_URL 과 SUPABASE_KEY 를 넣어 주세요."
             )
         else:
+            # 지금 넣은 키가 올바른 종류인지 알려 줍니다.
+            종류, 안내 = supabase_db.키종류()
+            if 종류 == "service_role":
+                st.caption(f"🔑 {안내}")
+            else:
+                st.error(
+                    f"🔑 {안내}\n\n"
+                    "Supabase → Project Settings → API 에서 "
+                    "**service_role(secret)** 키를 복사해 Secrets의 "
+                    "SUPABASE_KEY 에 넣어 주세요."
+                )
+
             if st.button("☁️ Supabase에 저장하기", key=f"업로드_{페이지키}"):
                 성공수, 실패목록 = 0, []
                 for 학생 in 대상이름들:
