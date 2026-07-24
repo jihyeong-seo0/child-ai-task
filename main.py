@@ -125,7 +125,10 @@ if 종료 and 이름 and 현재값.strip() and 현재값 != 이전답 and not st
     # 시간이 끝났을 때도 AI 1차 채점을 자동으로 한 번 실행합니다.
     if not st.session_state.get("_종료채점됨"):
         st.session_state["_종료채점됨"] = True
-        common.AI_1차채점(이름, 문제은행, 표시문구="정리하는 중이에요...")
+        try:
+            common.AI_1차채점(이름, 문제은행, 표시문구="정리하는 중이에요...")
+        except TypeError:      # common.py 가 옛 버전일 때 대비
+            common.AI_1차채점(이름, 문제은행)
     supabase_db.자동저장(이름)      # Supabase에도 저장
     st.info("⏰ 시간이 끝나서, 지금까지 쓴 답을 자동으로 저장했어요.")
 
@@ -185,7 +188,10 @@ if 번호 == 총문제수 - 1:
             푼개수 = len(st.session_state["records"][이름]["인지과제"])
             # AI 1차 채점을 자동으로 실행합니다.
             # (채점 결과는 학생에게 보이지 않고 데이터베이스에만 저장돼요)
-            common.AI_1차채점(이름, 문제은행, 표시문구="제출하는 중이에요...")
+            try:
+                common.AI_1차채점(이름, 문제은행, 표시문구="제출하는 중이에요...")
+            except TypeError:  # common.py 가 옛 버전일 때 대비
+                common.AI_1차채점(이름, 문제은행)
             성공, 메시지 = supabase_db.학생저장(이름, 조용히=True)
             st.session_state[제출키] = True
             if 성공:
